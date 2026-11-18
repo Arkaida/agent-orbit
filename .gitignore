@@ -1,0 +1,22 @@
+__pycache__/
+*.pyc
+.build-cache*/
+.build-runtime/
+.media-build/
+install-orbit-baseline.json
+.logs/
+backups/
+dist/
+Agent Orbit.app/
+Codex Remote.app/
+.Codex Remote*.app/
+.Agent Orbit*.app/
+follow.json
+settings.json
+settings.local.json
+.env
+.DS_Store
+install-baseline.json
+install_*.py
+verify_*.py
+inspect_*.py

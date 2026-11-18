@@ -1,0 +1,4 @@
+#!/bin/sh
+# Backward-compatible entry point.
+project_dir=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
+exec /bin/sh "$project_dir/agent-orbit" "$@"

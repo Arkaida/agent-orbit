@@ -1,0 +1,22 @@
+{
+  "version": 1,
+  "remote_enabled": false,
+  "host": "",
+  "tmux_socket": "",
+  "local_enabled": true,
+  "local_codex_home": "~/.codex",
+  "local_limit": 16,
+  "local_followed": [],
+  "interval": 0.5,
+  "theme": "neon",
+  "pinned": true,
+  "sound": true,
+  "completion_sound": true,
+  "error_sound": true,
+  "show_previews": true,
+  "show_background_counts": true,
+  "bubble_scale": 1.0,
+  "opacity": 1.0,
+  "reduce_motion": false,
+  "launch_compact": false
+}
