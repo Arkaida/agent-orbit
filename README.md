@@ -50,7 +50,7 @@ Watch local Codex and remote Codex / Claude sessions from a compact always-on-to
 
 ## 安装
 
-1. 在 [Releases](https://github.com/Arkaida/agent-orbit/releases/latest) 下载与你的 Mac 匹配的应用 ZIP：Apple Silicon 选择 `arm64`，Intel 选择 `x86_64`。
+1. 在 [Releases](https://github.com/Arkaida/agent-orbit/releases/latest) 下载应用 ZIP。当前提供 Apple Silicon 的 `arm64` 安装包；Intel Mac 可按下方开发说明从源码构建。
 2. 解压，将 **Agent Orbit.app** 放到“应用程序”或任意常用目录，双击启动。
 3. 点右上角齿轮打开设置。默认监控本机；远端模式填写已有 SSH 别名与 tmux Socket，选择关注会话。
 
