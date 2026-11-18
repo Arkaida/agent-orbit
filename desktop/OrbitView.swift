@@ -1,0 +1,481 @@
+import AppKit
+
+final class BubbleView: NSView {
+    var restore: (() -> Void)?
+    var moved: (() -> Void)?
+    var sizeChanged: ((CGFloat) -> Void)?
+    private struct Node {
+        var key: String
+        var name: String
+        var agent: String
+        var status: String
+        var summary: String
+        var color: NSColor
+        var running: Bool
+        var waiting: Bool
+        var attention: Bool
+        var critical: Bool
+        var level: CGFloat
+        var outputAge: TimeInterval?
+        var observedFor: TimeInterval
+        var source: String
+    }
+    private struct Ring {
+        var indices: [Int]
+        var radius: CGFloat
+        var phase: CGFloat = 0
+        var fontSize: CGFloat = 8.2
+    }
+    private struct Sample {
+        var time: TimeInterval
+        var level: CGFloat?
+    }
+    private struct OutputMark {
+        var time: TimeInterval
+        var amount: Int
+    }
+    private var outputMarks: [String: [OutputMark]] = [:]
+    private var outputReadings: [String: (epoch: Int, total: Int)] = [:]
+    private var observingSince: [String: TimeInterval] = [:]
+    private var nodes: [Node] = []
+    private var rings: [Ring] = []
+    private var levels: [String: CGFloat] = [:]
+    private var samples: [Sample] = []
+    private var orbitRadius: CGFloat = 58
+    private var lastDiameter: CGFloat = 176
+    private var connected = false
+    private var connectionState = "connecting"
+    private var connectionMessage = "正在连接"
+    private var reduceMotion = false
+    private var tint = NSColor.neonCyan
+    private var hoveredName: String?
+    private var tracking: NSTrackingArea?
+    private var pressPoint: NSPoint?
+    private var windowOrigin = NSPoint.zero
+    private var dragged = false
+    private var runningCount: Int { nodes.filter(\.running).count }
+    private var waitingCount: Int { nodes.filter(\.waiting).count }
+    private var errorCount: Int { nodes.filter(\.critical).count }
+    private var warningCount: Int { nodes.filter { $0.attention && !$0.critical }.count }
+    private var connectionNotice: String {
+        switch connectionState {
+        case "delayed": return "等待更新"
+        case "connecting": return "连接中"
+        case "remote_error": return "采样异常"
+        case "config_error": return "设置异常"
+        case "monitor_error": return "监控恢复中"
+        default: return "正在重连"
+        }
+    }
+    private var activity: CGFloat { nodes.filter(\.running).map(\.level).max() ?? 0 }
+
+    override init(frame frameRect: NSRect) {
+        super.init(frame: frameRect)
+        setAccessibilityElement(true)
+        setAccessibilityRole(.button)
+        setAccessibilityHelp("中心显示整体运行和等待数量，会话沿圆周显示。曲线和声浪表示输出活跃度。点击展开，按住拖动。")
+    }
+    required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
+    override func acceptsFirstMouse(for event: NSEvent?) -> Bool { true }
+    override func accessibilityPerformPress() -> Bool { restore?(); return true }
+
+    func update(_ model: PanelModel) {
+        let now = ProcessInfo.processInfo.systemUptime
+        let wasConnected = connected
+        connected = model.connected
+        connectionState = model.connectionState
+        reduceMotion = model.settings.reduceMotion
+        recordOutput(model.rows, now: now)
+        connectionMessage = model.message
+        let groups = Dictionary(grouping: model.rows, by: \.monitorKey)
+        var order: [String] = []
+        // Status changes never reorder names or move them between rings.
+        for name in model.followed.map({ "remote:" + $0 }) + groups.keys.sorted() where groups[name] != nil && !order.contains(name) {
+            order.append(name)
+        }
+        func priority(_ pane: Pane) -> Int {
+            pane.isCritical ? 0 : pane.needsAttention ? 1 : pane.state == "running" ? 2 : pane.state == "idle" ? 3 : 4
+        }
+        let previouslyRunning = Set(nodes.filter(\.running).map(\.key))
+        nodes = order.compactMap { name in
+            guard let rows = groups[name], let pane = rows.min(by: { priority($0) < priority($1) }) else { return nil }
+            let live = connected && rows.contains { $0.available != false }
+            let running = live && rows.contains { $0.state == "running" && !$0.needsAttention }
+            let waiting = live && rows.allSatisfy { $0.state == "idle" }
+            let color: NSColor = !live ? .neonMuted : pane.isCritical ? .neonRed : pane.needsAttention ? .neonAmber : waiting ? .neonGreen : running ? .neonAmber : .neonMuted
+            if !wasConnected || !previouslyRunning.contains(name) || observingSince[name] == nil { observingSince[name] = now }
+            let recentAmount = (outputMarks[name] ?? []).filter { now - $0.time < 1.5 }.reduce(0) { $0 + $1.amount }
+            let target = running ? outputLevel(recentAmount) : 0
+            let level = running ? (levels[name] ?? target) * 0.4 + target * 0.6 : 0
+            let recent = rows.min { ($0.activityAge ?? .infinity) < ($1.activityAge ?? .infinity) }
+            levels[name] = level
+            let background = rows.reduce(0) { $0 + ($1.backgroundCount ?? 0) }
+            let status = !live ? (connectionState == "delayed" ? "等待更新" : "离线") : pane.isCritical ? "异常" : pane.needsAttention ? "待处理" : running ? "运行中" : waiting ? "等待输入" : "待核实"
+            let summary: String
+            if !live {
+                summary = ""
+            } else if pane.needsAttention {
+                let error = clean(pane.errorSummary ?? "")
+                summary = error.isEmpty ? pane.status : error
+            } else if running && background > 0 {
+                summary = pane.workingIsBackgroundCount ? "" : clean(pane.working ?? "")
+            } else if running {
+                let working = clean(pane.working ?? "")
+                let preview = pane.preview.reversed().map { clean($0) }.first { isWorkText($0) }
+                if let range = working.range(of: "\\d+ background terminals? running", options: [.regularExpression, .caseInsensitive]) {
+                    let count = working[range].prefix(while: { $0.isNumber })
+                    summary = "后台终端 \(count) 运行中"
+                } else {
+                    summary = working.range(of: "后台|工作流|确认|等待", options: .regularExpression) != nil ? working : preview ?? "主会话运行中"
+                }
+            } else {
+                // A completed task's old terminal output is never a current-work summary.
+                summary = waiting ? "" : pane.status
+            }
+            let counts = live && model.settings.showBackgroundCounts ? rows.compactMap(\.backgroundCountsText).joined(separator: " / ") : ""
+            let detail = [summary, counts].filter { !$0.isEmpty }.joined(separator: " · ")
+            return Node(key: name, name: pane.orbitName, agent: pane.agent == "claude" ? "Claude" : pane.agent == "codex" ? "Codex" : "CLI", status: status, summary: detail, color: color, running: running, waiting: waiting,
+                        attention: pane.needsAttention, critical: pane.isCritical, level: level,
+                        outputAge: running ? recent?.activityAge : nil, observedFor: now - (observingSince[name] ?? now), source: recent?.activitySource ?? "")
+        }
+        levels = levels.filter { order.contains($0.key) }
+        observingSince = observingSince.filter { order.contains($0.key) }
+        if !nodes.contains(where: { $0.key == hoveredName }) { hoveredName = nil }
+        configureRings()
+        let diameter = ceil((orbitRadius + 30) * 2)
+        let scaledDiameter = diameter * model.settings.bubbleScale
+        if abs(scaledDiameter - lastDiameter) > 0.5 { lastDiameter = scaledDiameter; sizeChanged?(scaledDiameter) }
+        setBoundsSize(NSSize(width: diameter, height: diameter))
+        tint = !connected ? .neonMuted : errorCount > 0 ? .neonRed : nodes.contains(where: \.attention) ? .neonAmber : runningCount > 0 ? .neonCyan : waitingCount > 0 ? .neonGreen : .neonMuted
+        samples.removeAll { now - $0.time > 60 }
+        // The bridge redraws at 10 Hz; the graph records one real sample per second.
+        if samples.last.map({ now - $0.time >= 1 }) ?? true {
+            let since = samples.last?.time ?? now - 1
+            let amount = outputMarks.values.flatMap { $0 }.filter { $0.time > since }.reduce(0) { $0 + $1.amount }
+            samples.append(Sample(time: now, level: connected ? outputLevel(amount) : nil))
+        }
+        let summary = connected ? "\(runningCount) 个运行中，\(waitingCount) 个等待输入，\(errorCount) 个异常" : model.message
+        let descriptions = nodes.map { $0.name + "（" + $0.agent + "）：" + $0.status + ($0.summary.isEmpty ? "" : "，" + $0.summary) + ($0.running ? "，" + liveText($0) : "") }.joined(separator: "\n")
+        toolTip = summary + "\n" + descriptions + "\n曲线：近 60 秒输出/日志活动；环外：各会话近 24 秒活动，顺时针从旧到新\n悬停查看完整状态，点击展开，拖动移动"
+        setAccessibilityLabel("会话环，" + summary + "，" + descriptions.replacingOccurrences(of: "\n", with: "，"))
+        needsDisplay = true
+    }
+
+    private func recordOutput(_ rows: [Pane], now: TimeInterval) {
+        let sessions = Set(rows.map(\.monitorKey))
+        let ids = Set(rows.map(\.paneId))
+        outputMarks = outputMarks.filter { sessions.contains($0.key) }.mapValues { $0.filter { now - $0.time < 60 } }
+        outputReadings = outputReadings.filter { ids.contains($0.key) }
+        guard connected else { outputReadings.removeAll(); return }
+        for pane in rows {
+            guard pane.available != false, let epoch = pane.activityEpoch, let total = pane.outputTotal else { continue }
+            if let previous = outputReadings[pane.paneId], previous.epoch == epoch, total >= previous.total {
+                let amount = total - previous.total
+                if amount > 0 && pane.state == "running" && !pane.needsAttention {
+                    outputMarks[pane.monitorKey, default: []].append(OutputMark(time: now, amount: amount))
+                }
+            } else {
+                // A new process or a reconnect starts at its current counter.
+                observingSince[pane.monitorKey] = now
+                outputMarks[pane.monitorKey] = []
+            }
+            outputReadings[pane.paneId] = (epoch, total)
+        }
+    }
+
+    private func outputLevel(_ amount: Int) -> CGFloat {
+        CGFloat(min(1, log1p(Double(max(0, amount))) / log1p(5000)))
+    }
+
+    private func liveText(_ node: Node) -> String {
+        guard node.running else { return node.status }
+        guard let age = node.outputAge else { return "暂无新输出 · " + duration(node.observedFor) }
+        if age < 1.5 {
+            return node.source == "tokens" ? "生成量刚增加" : node.source == "log" ? "日志刚更新" : node.source == "background" ? "后台刚有输出" : node.source == "workflow" ? "工作流有进展" : "刚有新输出"
+        }
+        return "静默 " + duration(age) + " · 运行中"
+    }
+
+    private func duration(_ seconds: TimeInterval) -> String {
+        let value = max(0, Int(seconds))
+        return value < 60 ? "\(value)s" : "\(value / 60)m\(value % 60)s"
+    }
+
+    private func isWorkText(_ text: String) -> Bool {
+        !text.isEmpty && text.range(of: "^\\+\\s*(?:Show details|\\d+ lines?)|^.*\\(\\^t to expand\\)$|^[─━]+$|^(?:Claude(?: Code)?|Codex)$|^(?:⎿\\s*)?Tip: Use /btw", options: [.regularExpression, .caseInsensitive]) == nil
+    }
+
+    private func clean(_ value: String) -> String {
+        String(value.replacingOccurrences(of: "^[\\s│┃└├─●•✻✽✶✳✢·]+", with: "", options: .regularExpression)
+            .replacingOccurrences(of: "\\s+", with: " ", options: .regularExpression).prefix(180))
+    }
+
+    private func label(_ name: String) -> String {
+        name.count > 20 ? String(name.prefix(11)) + "…" + String(name.suffix(7)) : name
+    }
+
+    private func configureRings() {
+        func requiredRadius(_ indices: [Int], _ size: CGFloat) -> CGFloat {
+            let font = NSFont.monospacedSystemFont(ofSize: size, weight: .medium)
+            let longest = indices.map { index -> CGFloat in
+                let name = label(nodes[index].name)
+                return (name as NSString).size(withAttributes: [.font: font]).width + CGFloat(name.count) * 0.25 + 10
+            }.max() ?? 0
+            return longest * CGFloat(indices.count) / (.pi * 2)
+        }
+        if nodes.count <= 6 {
+            let indices = Array(nodes.indices)
+            orbitRadius = max(58, requiredRadius(indices, 8.2))
+            rings = [Ring(indices: indices, radius: orbitRadius)]
+        } else {
+            var outerCount = Int(ceil(Double(nodes.count) * 0.6))
+            func radiusForSplit(_ split: Int) -> CGFloat {
+                max(88, requiredRadius(Array(0..<split), 8.2),
+                    max(59, requiredRadius(Array(split..<nodes.count), 8)) + 29)
+            }
+            orbitRadius = radiusForSplit(outerCount)
+            // Fit long names by balancing the two circumferences, not by shrinking type.
+            for split in max(4, (nodes.count + 1) / 2)...(nodes.count - 2) {
+                let candidate = radiusForSplit(split)
+                if candidate < orbitRadius - 0.5 { outerCount = split; orbitRadius = candidate }
+            }
+            let outer = Array(0..<outerCount)
+            let inner = Array(outerCount..<nodes.count)
+            rings = [Ring(indices: outer, radius: orbitRadius),
+                     Ring(indices: inner, radius: orbitRadius - 29, phase: .pi / CGFloat(inner.count), fontSize: 8)]
+        }
+    }
+
+    private func point(_ center: NSPoint, _ radius: CGFloat, _ angle: CGFloat) -> NSPoint {
+        NSPoint(x: center.x + cos(angle) * radius, y: center.y + sin(angle) * radius)
+    }
+
+    private func angle(_ index: Int, _ ring: Ring) -> CGFloat {
+        .pi / 2 - CGFloat(index) * .pi * 2 / CGFloat(max(1, ring.indices.count)) + ring.phase
+    }
+
+    override func draw(_ dirtyRect: NSRect) {
+        super.draw(dirtyRect)
+        let center = NSPoint(x: bounds.midX, y: bounds.midY)
+        let bodyRadius = orbitRadius + 10
+        let body = NSBezierPath(ovalIn: NSRect(x: center.x - bodyRadius, y: center.y - bodyRadius, width: bodyRadius * 2, height: bodyRadius * 2))
+        NSGraphicsContext.saveGraphicsState()
+        let shadow = NSShadow(); shadow.shadowColor = tint.withAlphaComponent(0.16)
+        shadow.shadowBlurRadius = 8; shadow.shadowOffset = .zero; shadow.set()
+        ThemePalette.base.withAlphaComponent(0.98).setFill(); body.fill()
+        NSGraphicsContext.restoreGraphicsState()
+        NSGradient(starting: ThemePalette.surface, ending: ThemePalette.base)?.draw(in: body, angle: -65)
+        NSGraphicsContext.saveGraphicsState(); body.addClip()
+        let grid = NSBezierPath()
+        for x in stride(from: CGFloat(0), through: bounds.width, by: 16) {
+            grid.move(to: NSPoint(x: x, y: 0)); grid.line(to: NSPoint(x: x, y: bounds.height))
+            grid.move(to: NSPoint(x: 0, y: x)); grid.line(to: NSPoint(x: bounds.width, y: x))
+        }
+        NSColor.neonCyan.withAlphaComponent(0.035).setStroke(); grid.lineWidth = 0.4; grid.stroke()
+        NSGraphicsContext.restoreGraphicsState()
+        tint.withAlphaComponent(0.16).setStroke(); body.lineWidth = 0.6; body.stroke()
+        let reducedMotion = reduceMotion || NSWorkspace.shared.accessibilityDisplayShouldReduceMotion
+        let time = reducedMotion ? 0 : CGFloat(ProcessInfo.processInfo.systemUptime)
+        for (ringIndex, ring) in rings.enumerated() {
+            drawWaves(center, ring: ring, inner: ringIndex > 0, now: ProcessInfo.processInfo.systemUptime)
+            let radius = ring.radius - 10
+            let orbit = NSBezierPath(ovalIn: NSRect(x: center.x - radius, y: center.y - radius, width: radius * 2, height: radius * 2))
+            NSColor.neonCyan.withAlphaComponent(0.13).setStroke(); orbit.lineWidth = 0.6; orbit.stroke()
+            for (index, nodeIndex) in ring.indices.enumerated() {
+                let node = nodes[nodeIndex]
+                let theta = angle(index, ring)
+                let span = CGFloat.pi * 2 / CGFloat(ring.indices.count)
+                let arc = NSBezierPath()
+                arc.appendArc(withCenter: center, radius: radius, startAngle: (theta - span * 0.37) * 180 / .pi,
+                              endAngle: (theta + span * 0.37) * 180 / .pi, clockwise: false)
+                let hovered = hoveredName == node.key
+                node.color.withAlphaComponent(hovered ? 0.95 : node.running ? 0.6 : 0.3).setStroke()
+                arc.lineWidth = hovered ? 2 : node.running ? 1.6 : 1; arc.lineCapStyle = .round; arc.stroke()
+                drawArcText(label(node.name), center: center, radius: ring.radius, angle: theta, size: ring.fontSize, color: node.color)
+                if node.running {
+                    let position = point(center, radius, theta)
+                    node.color.withAlphaComponent(node.outputAge.map { $0 < 1.5 } == true ? 1 : 0.35).setFill()
+                    NSBezierPath(ovalIn: NSRect(x: position.x - 1.5, y: position.y - 1.5, width: 3, height: 3)).fill()
+                }
+            }
+        }
+        drawHub(center, time: time, reducedMotion: reducedMotion)
+    }
+
+    private func drawWaves(_ center: NSPoint, ring: Ring, inner: Bool, now: TimeInterval) {
+        let radius = ring.radius + (inner ? 9 : 17)
+        let span = CGFloat.pi * 2 / CGFloat(max(1, ring.indices.count))
+        for (slot, nodeIndex) in ring.indices.enumerated() {
+            let node = nodes[nodeIndex]
+            let theta = angle(slot, ring)
+            let bars = max(12, min(48, Int(span * radius * 0.8 / 3.2)))
+            let bucketDuration = 24 / Double(bars)
+            let end = floor(now / bucketDuration) * bucketDuration + bucketDuration
+            let marks = outputMarks[node.key] ?? []
+            for index in 0..<bars {
+                let fraction = CGFloat(index) / CGFloat(max(1, bars - 1))
+                let barAngle = theta + span * (0.4 - fraction * 0.8)
+                let start = end - Double(bars - index) * bucketDuration
+                let amount = marks.filter { $0.time >= start && $0.time < start + bucketDuration }.reduce(0) { $0 + $1.amount }
+                let measured = connected && node.running && amount > 0
+                let energy = outputLevel(amount)
+                let height: CGFloat = measured ? (inner ? 2.5 : 4) + energy * (inner ? 2.5 : 8) : 0.8
+                let color: NSColor = !connected ? .neonMuted : node.critical ? .neonRed : measured ? .neonCyan : node.color
+                let path = NSBezierPath()
+                path.move(to: point(center, radius, barAngle)); path.line(to: point(center, radius + height, barAngle))
+                color.withAlphaComponent(measured ? 0.3 + fraction * 0.6 : node.running ? 0.25 : 0.17).setStroke()
+                path.lineWidth = measured ? 1.5 : 0.8; path.lineCapStyle = .round; path.stroke()
+            }
+            // The head flashes only after an observed output event, never on a clock loop.
+            if connected && node.running, let age = node.outputAge, age < 1.5 {
+                let head = point(center, radius, theta - span * 0.4)
+                NSColor.neonCyan.withAlphaComponent(CGFloat(1 - age / 2)).setFill()
+                NSBezierPath(ovalIn: NSRect(x: head.x - 2, y: head.y - 2, width: 4, height: 4)).fill()
+            }
+        }
+    }
+
+    private func drawHub(_ center: NSPoint, time: CGFloat, reducedMotion: Bool) {
+        let radius = (rings.last?.radius ?? orbitRadius) - 14
+        let scale = min(1.12, radius / 49)
+        let energy = activity
+        let pulse: CGFloat = connected && runningCount > 0 && !reducedMotion ? (sin(time * 1.8) + 1) / 2 : 0
+        let glowRadius = radius * (0.78 + energy * 0.12 + pulse * 0.025)
+        let core = NSBezierPath(ovalIn: NSRect(x: center.x - glowRadius, y: center.y - glowRadius, width: glowRadius * 2, height: glowRadius * 2))
+        NSGradient(starting: tint.withAlphaComponent(0.09 + energy * 0.12 + pulse * 0.02), ending: tint.withAlphaComponent(0))?
+            .draw(in: core, relativeCenterPosition: .zero)
+        // Short guide arcs frame the content without boxing in session names.
+        for start in [CGFloat(35), 155, 275] {
+            let guide = NSBezierPath()
+            guide.appendArc(withCenter: center, radius: radius - 2, startAngle: start, endAngle: start + 27)
+            tint.withAlphaComponent(0.13 + energy * 0.13).setStroke(); guide.lineWidth = 0.65; guide.stroke()
+        }
+        func rect(_ x: CGFloat, _ y: CGFloat, _ w: CGFloat, _ h: CGFloat) -> NSRect {
+            NSRect(x: center.x + x * scale, y: center.y + y * scale, width: w * scale, height: h * scale)
+        }
+        // The hub is always a global overview; hovering an arc only highlights that arc.
+        let countSize: CGFloat = max(runningCount, waitingCount) >= 100 ? 22 : 28
+        drawText(connected ? "\(runningCount)" : "—", rect: rect(-43, 2, 37, 34), size: countSize * scale,
+                 color: connected ? .neonCyan : .neonMuted)
+        drawText("/", rect: rect(-6, 9, 12, 21), size: 17 * scale, color: .neonMuted)
+        drawText(connected ? "\(waitingCount)" : "—", rect: rect(6, 2, 37, 34), size: countSize * scale,
+                 color: connected ? .neonGreen : .neonMuted)
+        drawText("运行", rect: rect(-43, -9, 37, 11), size: 8.2 * scale, color: .neonMuted)
+        drawText("等待", rect: rect(6, -9, 37, 11), size: 8.2 * scale, color: .neonMuted)
+        var notices: [String] = []
+        if !connected { notices.append(connectionNotice) }
+        if connected && errorCount > 0 { notices.append("异常 \(errorCount)") }
+        if connected && warningCount > 0 { notices.append("待处理 \(warningCount)") }
+        if !notices.isEmpty {
+            drawText(notices.joined(separator: " · "), rect: rect(-42, 34, 84, 10), size: 7.1 * scale,
+                     color: !connected ? (connectionState == "delayed" ? .neonAmber : .neonMuted) : errorCount > 0 ? .neonRed : .neonAmber)
+        }
+        drawChart(in: rect(-35, -30, 70, 13))
+        drawText(connected ? "输出活动 · 60s" : connectionState == "delayed" ? "采样延迟" : "等待连接", rect: rect(-37, -43, 74, 9), size: 6.5 * scale, color: .neonMuted)
+    }
+
+    private func drawChart(in rect: NSRect) {
+        let baseline = NSBezierPath()
+        baseline.move(to: NSPoint(x: rect.minX, y: rect.minY)); baseline.line(to: NSPoint(x: rect.maxX, y: rect.minY))
+        NSColor.neonMuted.withAlphaComponent(0.2).setStroke(); baseline.lineWidth = 0.5; baseline.stroke()
+        let now = ProcessInfo.processInfo.systemUptime
+        var segment: [NSPoint] = []
+        var previous: TimeInterval?
+        func flush() {
+            guard let first = segment.first else { return }
+            let line = NSBezierPath(); line.move(to: first)
+            for point in segment.dropFirst() { line.line(to: point) }
+            let area = line.copy() as! NSBezierPath
+            area.line(to: NSPoint(x: segment.last!.x, y: rect.minY))
+            area.line(to: NSPoint(x: first.x, y: rect.minY)); area.close()
+            tint.withAlphaComponent(connected ? 0.1 : 0.03).setFill(); area.fill()
+            tint.withAlphaComponent(connected ? 0.7 : 0.2).setStroke(); line.lineWidth = 1; line.lineJoinStyle = .round; line.stroke()
+            segment.removeAll(keepingCapacity: true)
+        }
+        for sample in samples {
+            if sample.level == nil || previous.map({ sample.time - $0 > 2.5 }) == true { flush() }
+            if let level = sample.level {
+                let x = rect.maxX - CGFloat(min(60, max(0, now - sample.time))) / 60 * rect.width
+                segment.append(NSPoint(x: x, y: rect.minY + min(1, max(0, level)) * rect.height))
+            }
+            previous = sample.time
+        }
+        let lastPoint = segment.last
+        flush()
+        if connected, let end = lastPoint {
+            tint.withAlphaComponent(0.8).setFill()
+            NSBezierPath(ovalIn: NSRect(x: end.x - 1.2, y: end.y - 1.2, width: 2.4, height: 2.4)).fill()
+        }
+    }
+
+    private func drawArcText(_ text: String, center: NSPoint, radius: CGFloat, angle: CGFloat, size: CGFloat, color: NSColor) {
+        let font = NSFont.monospacedSystemFont(ofSize: size, weight: .medium)
+        let attributes: [NSAttributedString.Key: Any] = [.font: font, .foregroundColor: color]
+        let characters = text.map { String($0) as NSString }
+        let widths = characters.map { $0.size(withAttributes: attributes).width + 0.25 }
+        let total = widths.reduce(0, +)
+        let bottom = sin(angle.truncatingRemainder(dividingBy: .pi * 2)) < -0.1
+        var offset = -total / 2
+        for (index, character) in characters.enumerated() {
+            let width = widths[index]
+            let delta = (offset + width / 2) / radius
+            let theta = angle + (bottom ? delta : -delta)
+            let position = point(center, radius, theta)
+            NSGraphicsContext.saveGraphicsState()
+            let transform = NSAffineTransform()
+            transform.translateX(by: position.x, yBy: position.y)
+            transform.rotate(byDegrees: theta * 180 / .pi + (bottom ? 90 : -90))
+            transform.concat()
+            character.draw(at: NSPoint(x: -width / 2, y: -font.ascender / 2), withAttributes: attributes)
+            NSGraphicsContext.restoreGraphicsState()
+            offset += width
+        }
+    }
+
+    private func drawText(_ text: String, rect: NSRect, size: CGFloat, color: NSColor) {
+        let style = NSMutableParagraphStyle(); style.alignment = .center; style.lineBreakMode = .byTruncatingMiddle
+        (text as NSString).draw(in: rect, withAttributes: [.font: NSFont.monospacedSystemFont(ofSize: size, weight: .medium), .foregroundColor: color, .paragraphStyle: style])
+    }
+
+    override func updateTrackingAreas() {
+        super.updateTrackingAreas()
+        if let tracking = tracking { removeTrackingArea(tracking) }
+        let area = NSTrackingArea(rect: .zero, options: [.mouseMoved, .mouseEnteredAndExited, .activeAlways, .inVisibleRect], owner: self)
+        tracking = area; addTrackingArea(area)
+    }
+
+    override func mouseMoved(with event: NSEvent) {
+        let cursor = convert(event.locationInWindow, from: nil)
+        let center = NSPoint(x: bounds.midX, y: bounds.midY)
+        let dx = cursor.x - center.x, dy = cursor.y - center.y
+        let radius = hypot(dx, dy)
+        let theta = atan2(dy, dx)
+        var hovered: String?
+        if let ring = rings.min(by: { abs($0.radius - radius) < abs($1.radius - radius) }), abs(ring.radius - radius) < 13, !ring.indices.isEmpty {
+            let raw = (.pi / 2 + ring.phase - theta) * CGFloat(ring.indices.count) / (.pi * 2)
+            let slot = (Int(raw.rounded()) % ring.indices.count + ring.indices.count) % ring.indices.count
+            hovered = nodes[ring.indices[slot]].key
+        }
+        if hoveredName != hovered { hoveredName = hovered; needsDisplay = true }
+    }
+    override func mouseExited(with event: NSEvent) { hoveredName = nil; needsDisplay = true }
+
+    override func mouseDown(with event: NSEvent) {
+        pressPoint = window?.convertPoint(toScreen: event.locationInWindow) ?? NSEvent.mouseLocation
+        windowOrigin = window?.frame.origin ?? .zero; dragged = false
+    }
+    override func mouseDragged(with event: NSEvent) {
+        guard let start = pressPoint else { return }
+        let point = window?.convertPoint(toScreen: event.locationInWindow) ?? NSEvent.mouseLocation
+        let dx = point.x - start.x, dy = point.y - start.y
+        if abs(dx) + abs(dy) > 4 { dragged = true }
+        if dragged { window?.setFrameOrigin(NSPoint(x: windowOrigin.x + dx, y: windowOrigin.y + dy)) }
+    }
+    override func mouseUp(with event: NSEvent) {
+        guard let start = pressPoint else { return }
+        let point = window?.convertPoint(toScreen: event.locationInWindow) ?? NSEvent.mouseLocation
+        if abs(point.x - start.x) + abs(point.y - start.y) > 4 { dragged = true }
+        pressPoint = nil
+        if dragged { moved?() } else { restore?() }
+    }
+}

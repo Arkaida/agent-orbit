@@ -1,0 +1,1 @@
+// The modern toolchain uses bridging.modulemap; hide a stale duplicate map.
