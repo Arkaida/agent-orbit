@@ -80,8 +80,8 @@ def main():
     hero=base.copy();d=ImageDraw.Draw(hero)
     text(d,(74,100),'AGENT ORBIT',22,CYAN)
     text(d,(70,155),'Agent Orbit',82)
-    text(d,(74,276),'让 Agent 的状态，一眼可见',34,chinese=True)
-    text(d,(74,340),'Local Codex + Remote Codex / Claude',23,MUTED)
+    text(d,(74,276),'让 CLI Agent 的状态，一眼可见',34,chinese=True)
+    text(d,(74,340),'Codex CLI + Claude Code CLI',23,MUTED)
     for x,label in [(74,'NATIVE macOS'),(280,'LOCAL + SSH'),(472,'OPEN SOURCE')]:
         d.rounded_rectangle((x,414,x+176,452),radius=19,fill='#0d2639',outline='#23506a')
         text(d,(x+15,424),label,17,CYAN)
@@ -105,7 +105,7 @@ def main():
         text(draw,(64,740),'github.com/Arkaida/agent-orbit',18,MUTED)
         text(draw,(1030,748),'DEMO / SYNTHETIC DATA',12,MUTED)
         if t<5:
-            headline='让每个 Agent\n都在视线之内';subtitle='本机 Codex · 远端 Codex / Claude';detail='一个安静常驻桌面的原生会话监控器';panel='panel-running'
+            headline='让 CLI Agent\n都在视线之内';subtitle='Codex CLI · Claude Code CLI';detail='本机与远端 CLI 会话，常驻桌面监控';panel='panel-running'
         elif t<11:
             headline='完成时，\n再回来';subtitle='运行 → 等待输入';detail='确认主任务结束后，以绿色状态提醒你';panel='panel-running' if t<8 else 'panel-neon'
         elif t<17:

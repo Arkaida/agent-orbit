@@ -6,7 +6,7 @@
 
 **Know when your agents need you.**
 
-本机与远端 Agent 的桌面会话环 · A native macOS monitor for Codex & Claude
+本机与远端 CLI Agent 的桌面会话环 · A native macOS monitor for Codex CLI & Claude Code CLI
 
 [![macOS 13+](https://img.shields.io/badge/macOS-13%2B-101a2c?logo=apple&logoColor=white)](https://github.com/Arkaida/agent-orbit/releases)
 [![MIT](https://img.shields.io/badge/license-MIT-38d9ff)](LICENSE)
@@ -18,9 +18,9 @@
 
 </div>
 
-不必反复切回终端，看看 Agent 做完了没有。Agent Orbit 常驻桌面，在任务等待输入、需要确认或遇到异常时，让你及时看到。
+不必反复切回终端，看看 CLI Agent 做完了没有。**Agent Orbit 专注监控 Codex CLI 与 Claude Code CLI 会话**，常驻桌面，在任务等待输入、需要确认或遇到异常时，让你及时看到。
 
-Watch local Codex and remote Codex / Claude sessions from a compact always-on-top window or floating ring. See running, waiting and error states at a glance, with optional sound alerts.
+Monitor **Codex CLI and Claude Code CLI sessions** from a compact always-on-top window or floating ring. Supports local Codex CLI and remote Codex CLI / Claude Code CLI over SSH and tmux. See running, waiting and error states at a glance, with optional sound alerts.
 
 > **独立应用。** 下载后双击 `.app` 即可运行，无需安装 Python、Node.js 或 Codex 插件，也不需要在 Codex 中启动。它读取你已有的会话，不启动或接管 Agent。
 
@@ -39,7 +39,7 @@ Watch local Codex and remote Codex / Claude sessions from a compact always-on-to
 
 ## 你可以做什么
 
-- **本机 + 远端**：自动发现本机 Codex；通过 SSH 读取远端 tmux 中的 Codex / Claude。连接状态彼此独立。
+- **本机 + 远端 CLI 监控**：自动发现本机 Codex CLI；通过 SSH 读取远端 tmux 中的 Codex CLI / Claude Code CLI。连接状态彼此独立。
 - **关注重要会话**：分别配置本机和远端关注列表；关闭设置后继续监控。
 - **收起成会话环**：点击展开，拖动移动；会话名沿边缘排列，多会话自动双圈。
 - **完成与异常提醒**：分别控制声音，恢复后自动移除旧异常，不展示执行历史。
