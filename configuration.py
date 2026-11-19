@@ -25,7 +25,9 @@ def defaults(root=None):
     return dict(version=1, remote_enabled=legacy, host='myserver' if legacy else '',
                 tmux_socket=os.environ.get('CODEX_TMUX_SOCKET', ''), local_enabled=True,
                 local_codex_home=os.environ.get('CODEX_HOME', str(Path.home() / '.codex')),
-                local_limit=16, local_followed=[], interval=.5, theme='neon', pinned=True,
+                local_limit=16, local_followed=[], interval=.5, theme='neon',
+                orbit_label_color='theme', wave_style='theme', wave_palette='theme',
+                wave_height=1.0, wave_density=1.0, pinned=True,
                 sound=True, completion_sound=True, error_sound=True, show_previews=True,
                 show_background_counts=True, bubble_scale=1.0, opacity=1.0,
                 reduce_motion=False, launch_compact=False)
@@ -49,7 +51,8 @@ def validate(settings):
             raise ValueError(key + ' 不是有效路径')
     if not result['local_codex_home'].strip():
         raise ValueError('请填写本机 Codex 数据目录')
-    for key, low, high in [('interval', .25, 5), ('bubble_scale', .7, 1.5), ('opacity', .65, 1), ('local_limit', 1, 64)]:
+    for key, low, high in [('interval', .25, 5), ('bubble_scale', .7, 1.5), ('opacity', .65, 1), ('local_limit', 1, 64),
+                           ('wave_height', .5, 1.5), ('wave_density', .6, 1.6)]:
         value = result.get(key)
         if isinstance(value, bool) or not isinstance(value, (int, float)) or not low <= value <= high:
             raise ValueError('{} 需要在 {}–{} 之间'.format(key, low, high))
@@ -57,6 +60,13 @@ def validate(settings):
         raise ValueError('本机会话数量需要是整数')
     if result.get('theme') not in ('neon', 'aurora', 'graphite', 'daylight'):
         raise ValueError('未知皮肤')
+    for key, options, label in [
+            ('orbit_label_color', ('theme', 'status'), '会话名字色'),
+            ('wave_style', ('theme', 'bars', 'curve', 'dots', 'off'), '声浪样式'),
+            ('wave_palette', ('theme', 'ice', 'aurora', 'ember', 'status'), '声浪配色')]:
+        value = result.get(key)
+        if not isinstance(value, str) or value not in options:
+            raise ValueError(label + '不是可用选项')
     if not isinstance(result.get('local_followed'), list) or not all(isinstance(x, str) for x in result['local_followed']):
         raise ValueError('本机关注列表格式不正确')
     return result

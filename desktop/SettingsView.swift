@@ -12,6 +12,11 @@ struct AppSettings: Codable {
     var localFollowed: [String] = []
     var interval = 0.5
     var theme = "neon"
+    var orbitLabelColor = "theme"
+    var waveStyle = "theme"
+    var wavePalette = "theme"
+    var waveHeight = 1.0
+    var waveDensity = 1.0
     var pinned = true
     var sound = true
     var completionSound = true
@@ -25,7 +30,8 @@ struct AppSettings: Codable {
 
     enum CodingKeys: String, CodingKey {
         case version, remoteEnabled, host, tmuxSocket, localEnabled, localCodexHome, localLimit, localFollowed,
-             interval, theme, pinned, sound, completionSound, errorSound, showPreviews, showBackgroundCounts,
+             interval, theme, orbitLabelColor, waveStyle, wavePalette, waveHeight, waveDensity,
+             pinned, sound, completionSound, errorSound, showPreviews, showBackgroundCounts,
              bubbleScale, opacity, reduceMotion, launchCompact
     }
     init() {}
@@ -42,6 +48,11 @@ struct AppSettings: Codable {
         localFollowed = try c.decodeIfPresent([String].self, forKey: .localFollowed) ?? localFollowed
         interval = try c.decodeIfPresent(Double.self, forKey: .interval) ?? interval
         theme = try c.decodeIfPresent(String.self, forKey: .theme) ?? theme
+        orbitLabelColor = try c.decodeIfPresent(String.self, forKey: .orbitLabelColor) ?? orbitLabelColor
+        waveStyle = try c.decodeIfPresent(String.self, forKey: .waveStyle) ?? waveStyle
+        wavePalette = try c.decodeIfPresent(String.self, forKey: .wavePalette) ?? wavePalette
+        waveHeight = try c.decodeIfPresent(Double.self, forKey: .waveHeight) ?? waveHeight
+        waveDensity = try c.decodeIfPresent(Double.self, forKey: .waveDensity) ?? waveDensity
         pinned = try c.decodeIfPresent(Bool.self, forKey: .pinned) ?? pinned
         sound = try c.decodeIfPresent(Bool.self, forKey: .sound) ?? sound
         completionSound = try c.decodeIfPresent(Bool.self, forKey: .completionSound) ?? completionSound
@@ -62,6 +73,10 @@ struct AppSettings: Codable {
         }
         guard !localCodexHome.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { throw invalid("请填写 Codex 数据目录。") }
         guard (0.25...5).contains(interval), (1...64).contains(localLimit), (0.7...1.5).contains(bubbleScale), (0.65...1).contains(opacity), ThemePalette.names.contains(theme), version == 1 else { throw invalid("设置值超出了支持范围。") }
+        guard ["theme", "status"].contains(orbitLabelColor),
+              ["theme", "bars", "curve", "dots", "off"].contains(waveStyle),
+              ["theme", "ice", "aurora", "ember", "status"].contains(wavePalette) else { throw invalid("请选择有效的会话名字色、声浪样式与配色。") }
+        guard (0.5...1.5).contains(waveHeight), (0.6...1.6).contains(waveDensity) else { throw invalid("声浪高度需要在 50–150% 之间，密度需要在 60–160% 之间。") }
         guard !tmuxSocket.contains("\n"), !tmuxSocket.contains("\0"), !localCodexHome.contains("\n"), !localCodexHome.contains("\0") else { throw invalid("目录不能包含换行或空字符。") }
     }
     func encoded() throws -> Data {
@@ -147,7 +162,39 @@ struct SettingsView: View {
                 Picker("窗口与悬浮球", selection: $draft.theme) {
                     ForEach(Array(zip(ThemePalette.names, ThemePalette.titles)), id: \.0) { item in Text(item.1).tag(item.0) }
                 }.pickerStyle(.radioGroup)
-                Text("皮肤会同时应用到窗口、会话环和设置页，状态颜色仍保留原来的含义。")
+                Picker("会话名字色", selection: $draft.orbitLabelColor) {
+                    Text("跟随皮肤").tag("theme")
+                    Text("按运行状态").tag("status")
+                }
+                Text("会话名字默认跟随皮肤，运行状态由圆弧与标记表达；也可选择按运行状态着色。")
+                    .font(.caption).foregroundColor(.secondary)
+            }
+            Section("外围声浪") {
+                Picker("样式", selection: $draft.waveStyle) {
+                    Text("跟随皮肤").tag("theme")
+                    Text("声浪柱").tag("bars")
+                    Text("连续曲线").tag("curve")
+                    Text("节奏光点").tag("dots")
+                    Text("关闭").tag("off")
+                }
+                Picker("配色", selection: $draft.wavePalette) {
+                    Text("跟随皮肤").tag("theme")
+                    Text("冰蓝").tag("ice")
+                    Text("极光紫").tag("aurora")
+                    Text("暖焰").tag("ember")
+                    Text("按运行状态").tag("status")
+                }.disabled(draft.waveStyle == "off")
+                HStack {
+                    Text("高度")
+                    Slider(value: $draft.waveHeight, in: 0.5...1.5, step: 0.05)
+                    Text("\(Int((draft.waveHeight * 100).rounded()))%").monospacedDigit().frame(width: 44)
+                }.disabled(draft.waveStyle == "off")
+                HStack {
+                    Text("密度")
+                    Slider(value: $draft.waveDensity, in: 0.6...1.6, step: 0.1)
+                    Text("\(Int((draft.waveDensity * 100).rounded()))%").monospacedDigit().frame(width: 44)
+                }.disabled(draft.waveStyle == "off")
+                Text("选择跟随皮肤，声浪样式与配色会随皮肤一起切换。")
                     .font(.caption).foregroundColor(.secondary)
             }
             Section("显示") {
@@ -160,6 +207,8 @@ struct SettingsView: View {
                 HStack { Text("窗口不透明度"); Slider(value: $draft.opacity, in: 0.65...1, step: 0.05); Text("\(Int(draft.opacity * 100))%").frame(width: 44) }
             }
         }.formStyle(.grouped)
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
+            .scrollIndicators(.visible)
     }
     var notifications: some View {
         Form {
@@ -176,11 +225,14 @@ struct SettingsView: View {
             }
         }.formStyle(.grouped)
     }
+    private var appVersion: String {
+        Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "版本未知"
+    }
     var about: some View {
         VStack(alignment: .leading, spacing: 18) {
             Label("Agent Orbit", systemImage: "circle.hexagongrid.fill").font(.title2.bold())
-            Text("5.0.0 · macOS 原生会话监控").foregroundColor(.secondary)
-            Text("本机 Codex 与 SSH 远端 Codex / Claude 的持续监控、完成提醒、异常提示和桌面悬浮球。")
+            Text("\(appVersion) · macOS 原生 CLI 会话监控").foregroundColor(.secondary)
+            Text("持续监控本机 Codex CLI 与 SSH 远端 Codex CLI / Claude Code CLI，提供完成提醒、异常提示和桌面悬浮球。")
             Text("开源许可：MIT\n界面：AppKit / SwiftUI\n采集：Python 标准库，读取会话状态")
                 .font(.callout).foregroundColor(.secondary)
             Button("打开个人设置目录") { NSWorkspace.shared.open(model.dataRoot) }

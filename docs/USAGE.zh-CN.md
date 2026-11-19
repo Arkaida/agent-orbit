@@ -1,8 +1,8 @@
 # Agent Orbit
 
-A small native macOS monitor for local Codex and remote Codex / Claude sessions.
+A small native macOS monitor for local Codex CLI and remote Codex CLI / Claude Code CLI sessions.
 
-**5.0.1 — 本机 + 远端监控、统一设置与四套皮肤。**
+**5.0.2 — CLI 监控、会话名换肤与可调外围声浪。**
 
 用紧凑的置顶窗口或桌面会话环，查看 Agent 何时真正等待下一次输入、何时需要处理异常。绿色表示等待，橙色表示运行或待处理，红色表示异常。保留终端与在线 Agent 数量只提供上下文，不会把已结束的主对话误判成运行中。
 
@@ -11,9 +11,10 @@ A small native macOS monitor for local Codex and remote Codex / Claude sessions.
 - 同时监控本机 Codex 和 SSH 远端 Codex / Claude；两种来源独立显示连接状态。
 - 本机自动发现桌面端、CLI、VS Code 当前打开的 Codex 主会话，读取实际开始、结束与异常记录。
 - 原生设置窗口：监控来源、SSH 主机、tmux Socket、两种关注列表、采样间隔、提示音、置顶、透明度、悬浮球大小及显示内容。
-- 四套皮肤：霓虹深空、极光紫、石墨黑、晴空浅色，同时应用到面板、会话文字和会话环。切换后立即刷新，等待与异常分别保留绿色、红色含义。
+- 四套皮肤：霓虹深空、极光紫、石墨黑、晴空浅色，同时应用到面板和会话环。会话名默认跟随皮肤主色，切换后立即刷新；状态弧与标记仍以绿色表示等待、橙色表示运行或待处理、红色表示异常。
 - 完成与异常提示音可分别开关；已恢复的问题自动消失，不显示执行历史。
 - 圆周会话名、双圈布局、真实输出活动轨迹，支持收起、拖动和恢复。
+- 外围声浪可选择样式与配色，并调整高度和密度；变化来自实际输出活动。
 - 只读采集、Python 标准库，无遥测、账户注册、HTTP 服务或远端 hooks。
 
 ## 快速开始
@@ -64,6 +65,21 @@ macOS 个人数据保存于 `~/Library/Application Support/Agent Orbit/`：
 
 设置示例见 [settings.example.json](../settings.example.json)。保存后生效，变更连接参数时仅重新连接对应来源。皮肤和显示选项不会重启远端 Agent。
 
+## 外观与外围声浪
+
+在“设置 → 外观”中选择皮肤并调整悬浮球。会话名默认使用皮肤主色，也可改为按运行状态着色；判断任务状态时看状态弧、标记和状态文字。
+
+外围声浪支持以下独立设置：
+
+| 设置 | 可选内容 |
+| --- | --- |
+| 样式 | 随皮肤（`theme`）、柱形（`bars`）、曲线（`curve`）、光点（`dots`）、关闭（`off`） |
+| 配色 | 随皮肤（`theme`）、Ice、Aurora、Ember、状态色（`status`） |
+| 高度 | 50%–150% |
+| 密度 | 60%–160% |
+
+声浪由最近输出或日志变化驱动。高度、密度与配色只影响显示，不改变采样或状态判断；图形不表示 CPU 利用率、Token 速度或推理效率。关闭声浪后会话状态仍照常更新。
+
 ## 启动与连接检查
 
 首次连接失败时，面板会显示主机、网络、认证或设置错误，并提供“检查设置”入口。请核对 SSH 主机是否与终端中正常使用的别名一致，以及 tmux Socket 是否正确。修正并保存后会自动重连。
@@ -99,6 +115,6 @@ python3 scripts/package_release.py
 
 `dist/` 生成源码 ZIP、当前架构的 macOS 应用 ZIP 与 SHA256 校验文件。发布脚本按明确文件名单打包，排除关注列表、个人设置、日志、备份与缓存。应用包自带采集脚本和固定版本的可搬移 Python 运行环境，移动到其他目录后可独立使用。当前使用本地临时签名，正式面向陌生用户分发时应由发布者完成 Developer ID 签名与公证；此项目不会自动上传 GitHub。
 
-CI 在 Linux / macOS 运行测试，并在 macOS 构建应用。[贡献指南](CONTRIBUTING.md) · [开源参考](OPEN_SOURCE_RESEARCH.md)
+CI 在 Linux / macOS 运行测试，并在 macOS 构建应用。[贡献指南](../CONTRIBUTING.md) · [开源参考](../OPEN_SOURCE_RESEARCH.md)
 
 MIT License，见 [LICENSE](../LICENSE)。

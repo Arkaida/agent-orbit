@@ -113,7 +113,7 @@ def main():
         elif t<23:
             headline='收起之后，\n持续关注';subtitle='会话沿边缘排列 · 点击展开';detail='外圈与曲线显示输出活动，不代表 CPU';panel=None
         elif t<29:
-            headline='换一种\n桌面风格';subtitle='四套皮肤 · 大小与透明度';detail='在设置中选择适合你的显示方式';panel=['panel-neon','panel-aurora','panel-graphite','panel-daylight'][min(3,int((t-23)/1.5))]
+            headline='换一种\n桌面风格';subtitle='四套皮肤 · 可调声浪';detail='样式、配色、高度与密度，自由调整';panel=['panel-neon','panel-aurora','panel-graphite','panel-daylight'][min(3,int((t-23)/1.5))]
         else:
             headline='独立运行，\n双击即用';subtitle='无需 Python、Node.js 或 Codex 插件';detail='Agent Orbit · macOS 13+ · MIT';panel='panel-neon'
         text(draw,(64,177),headline,61,chinese=True)

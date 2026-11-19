@@ -11,6 +11,7 @@ final class BubbleView: NSView {
         var status: String
         var summary: String
         var color: NSColor
+        var live: Bool
         var running: Bool
         var waiting: Bool
         var attention: Bool
@@ -47,6 +48,11 @@ final class BubbleView: NSView {
     private var connectionState = "connecting"
     private var connectionMessage = "正在连接"
     private var reduceMotion = false
+    private var labelColorMode = "theme"
+    private var waveStyle = "theme"
+    private var wavePalette = "theme"
+    private var waveHeight: CGFloat = 1
+    private var waveDensity: CGFloat = 1
     private var tint = NSColor.neonCyan
     private var hoveredName: String?
     private var tracking: NSTrackingArea?
@@ -85,6 +91,11 @@ final class BubbleView: NSView {
         connected = model.connected
         connectionState = model.connectionState
         reduceMotion = model.settings.reduceMotion
+        labelColorMode = model.settings.orbitLabelColor
+        waveStyle = model.settings.waveStyle
+        wavePalette = model.settings.wavePalette
+        waveHeight = CGFloat(min(1.5, max(0.5, model.settings.waveHeight)))
+        waveDensity = CGFloat(min(1.6, max(0.6, model.settings.waveDensity)))
         recordOutput(model.rows, now: now)
         connectionMessage = model.message
         let groups = Dictionary(grouping: model.rows, by: \.monitorKey)
@@ -134,7 +145,7 @@ final class BubbleView: NSView {
             }
             let counts = live && model.settings.showBackgroundCounts ? rows.compactMap(\.backgroundCountsText).joined(separator: " / ") : ""
             let detail = [summary, counts].filter { !$0.isEmpty }.joined(separator: " · ")
-            return Node(key: name, name: pane.orbitName, agent: pane.agent == "claude" ? "Claude" : pane.agent == "codex" ? "Codex" : "CLI", status: status, summary: detail, color: color, running: running, waiting: waiting,
+            return Node(key: name, name: pane.orbitName, agent: pane.agent == "claude" ? "Claude" : pane.agent == "codex" ? "Codex" : "CLI", status: status, summary: detail, color: color, live: live, running: running, waiting: waiting,
                         attention: pane.needsAttention, critical: pane.isCritical, level: level,
                         outputAge: running ? recent?.activityAge : nil, observedFor: now - (observingSince[name] ?? now), source: recent?.activitySource ?? "")
         }
@@ -142,7 +153,8 @@ final class BubbleView: NSView {
         observingSince = observingSince.filter { order.contains($0.key) }
         if !nodes.contains(where: { $0.key == hoveredName }) { hoveredName = nil }
         configureRings()
-        let diameter = ceil((orbitRadius + 30) * 2)
+        let padding: CGFloat = waveStyle == "off" ? 20 : max(30, 17 + 12 * waveHeight + 3)
+        let diameter = ceil((orbitRadius + padding) * 2)
         let scaledDiameter = diameter * model.settings.bubbleScale
         if abs(scaledDiameter - lastDiameter) > 0.5 { lastDiameter = scaledDiameter; sizeChanged?(scaledDiameter) }
         setBoundsSize(NSSize(width: diameter, height: diameter))
@@ -184,7 +196,11 @@ final class BubbleView: NSView {
     }
 
     private func outputLevel(_ amount: Int) -> CGFloat {
-        CGFloat(min(1, log1p(Double(max(0, amount))) / log1p(5000)))
+        outputLevel(Double(amount))
+    }
+
+    private func outputLevel(_ amount: Double) -> CGFloat {
+        CGFloat(min(1, log1p(max(0, amount)) / log1p(5000)))
     }
 
     private func liveText(_ node: Node) -> String {
@@ -291,10 +307,12 @@ final class BubbleView: NSView {
                 let hovered = hoveredName == node.key
                 node.color.withAlphaComponent(hovered ? 0.95 : node.running ? 0.6 : 0.3).setStroke()
                 arc.lineWidth = hovered ? 2 : node.running ? 1.6 : 1; arc.lineCapStyle = .round; arc.stroke()
-                drawArcText(label(node.name), center: center, radius: ring.radius, angle: theta, size: ring.fontSize, color: node.color)
+                let nameColor: NSColor = !node.live ? .neonMuted : labelColorMode == "status" ? node.color : hovered ? ThemePalette.text : .neonCyan
+                drawArcText(label(node.name), center: center, radius: ring.radius, angle: theta, size: ring.fontSize, color: nameColor)
                 if node.running {
                     let position = point(center, radius, theta)
-                    node.color.withAlphaComponent(node.outputAge.map { $0 < 1.5 } == true ? 1 : 0.35).setFill()
+                    let age = outputMarks[node.key]?.last.map { ProcessInfo.processInfo.systemUptime - $0.time }
+                    node.color.withAlphaComponent(age.map { $0 < 1.5 } == true ? 1 : 0.35).setFill()
                     NSBezierPath(ovalIn: NSRect(x: position.x - 1.5, y: position.y - 1.5, width: 3, height: 3)).fill()
                 }
             }
@@ -303,36 +321,94 @@ final class BubbleView: NSView {
     }
 
     private func drawWaves(_ center: NSPoint, ring: Ring, inner: Bool, now: TimeInterval) {
+        guard waveStyle != "off" else { return }
+        let style = waveStyle == "theme" ? (ThemePalette.current == "aurora" ? "curve" : ThemePalette.light ? "dots" : "bars") : waveStyle
         let radius = ring.radius + (inner ? 9 : 17)
         let span = CGFloat.pi * 2 / CGFloat(max(1, ring.indices.count))
         for (slot, nodeIndex) in ring.indices.enumerated() {
             let node = nodes[nodeIndex]
             let theta = angle(slot, ring)
-            let bars = max(12, min(48, Int(span * radius * 0.8 / 3.2)))
+            let baseBars = max(12, min(48, Int(span * radius * 0.8 / 3.2)))
+            let bars = max(8, min(72, Int((CGFloat(baseBars) * waveDensity).rounded())))
             let bucketDuration = 24 / Double(bars)
             let end = floor(now / bucketDuration) * bucketDuration + bucketDuration
             let marks = outputMarks[node.key] ?? []
+            var points: [(tip: NSPoint, base: NSPoint, color: NSColor, alpha: CGFloat, measured: Bool)] = []
             for index in 0..<bars {
                 let fraction = CGFloat(index) / CGFloat(max(1, bars - 1))
                 let barAngle = theta + span * (0.4 - fraction * 0.8)
                 let start = end - Double(bars - index) * bucketDuration
                 let amount = marks.filter { $0.time >= start && $0.time < start + bucketDuration }.reduce(0) { $0 + $1.amount }
-                let measured = connected && node.running && amount > 0
-                let energy = outputLevel(amount)
-                let height: CGFloat = measured ? (inner ? 2.5 : 4) + energy * (inner ? 2.5 : 8) : 0.8
-                let color: NSColor = !connected ? .neonMuted : node.critical ? .neonRed : measured ? .neonCyan : node.color
-                let path = NSBezierPath()
-                path.move(to: point(center, radius, barAngle)); path.line(to: point(center, radius + height, barAngle))
-                color.withAlphaComponent(measured ? 0.3 + fraction * 0.6 : node.running ? 0.25 : 0.17).setStroke()
-                path.lineWidth = measured ? 1.5 : 0.8; path.lineCapStyle = .round; path.stroke()
+                let measured = node.live && node.running && amount > 0
+                // Density changes resolution; the intensity remains output per
+                // second, so adding more marks does not make a busy task quieter.
+                let energy = outputLevel(Double(amount) / bucketDuration)
+                let height: CGFloat = measured ? ((inner ? 2.5 : 4) + energy * (inner ? 2.5 : 8)) * waveHeight : 0.6
+                let color = waveColor(node, fraction: fraction)
+                let alpha: CGFloat = measured ? 0.35 + fraction * 0.6 : node.running ? 0.18 : 0.1
+                let base = point(center, radius, barAngle)
+                let tip = point(center, radius + height, barAngle)
+                points.append((tip, base, color, alpha, measured))
+                if style == "dots" {
+                    let dotRadius: CGFloat = measured ? 0.75 + energy * 0.8 : 0.4
+                    color.withAlphaComponent(alpha).setFill()
+                    NSBezierPath(ovalIn: NSRect(x: tip.x - dotRadius, y: tip.y - dotRadius, width: dotRadius * 2, height: dotRadius * 2)).fill()
+                } else if style != "curve" {
+                    let path = NSBezierPath()
+                    path.move(to: base); path.line(to: tip)
+                    color.withAlphaComponent(alpha).setStroke()
+                    path.lineWidth = measured ? (waveStyle == "theme" && ThemePalette.current == "graphite" ? 0.9 : 1.5) : 0.7
+                    path.lineCapStyle = .round; path.stroke()
+                }
+            }
+            if style == "curve", points.count > 1 {
+                let maximumRadius = radius + (inner ? 5 : 12) * waveHeight
+                func control(_ value: NSPoint) -> NSPoint {
+                    let dx = value.x - center.x, dy = value.y - center.y
+                    let distance = hypot(dx, dy)
+                    guard distance > maximumRadius else { return value }
+                    return NSPoint(x: center.x + dx * maximumRadius / distance, y: center.y + dy * maximumRadius / distance)
+                }
+                for index in 0..<(points.count - 1) {
+                    let left = points[index], right = points[index + 1]
+                    let p0 = points[max(0, index - 1)].tip
+                    let p3 = points[min(points.count - 1, index + 2)].tip
+                    let c1 = control(NSPoint(x: left.tip.x + (right.tip.x - p0.x) / 6, y: left.tip.y + (right.tip.y - p0.y) / 6))
+                    let c2 = control(NSPoint(x: right.tip.x - (p3.x - left.tip.x) / 6, y: right.tip.y - (p3.y - left.tip.y) / 6))
+                    let path = NSBezierPath(); path.move(to: left.tip)
+                    path.curve(to: right.tip, controlPoint1: c1, controlPoint2: c2)
+                    if left.measured || right.measured {
+                        let ribbon = path.copy() as! NSBezierPath
+                        ribbon.line(to: right.base); ribbon.line(to: left.base); ribbon.close()
+                        right.color.withAlphaComponent(0.09).setFill(); ribbon.fill()
+                    }
+                    right.color.withAlphaComponent(max(left.alpha, right.alpha)).setStroke()
+                    path.lineWidth = left.measured || right.measured ? 1.4 : 0.7
+                    path.lineCapStyle = .round; path.stroke()
+                }
             }
             // The head flashes only after an observed output event, never on a clock loop.
-            if connected && node.running, let age = node.outputAge, age < 1.5 {
+            if node.live && node.running, let mark = marks.last, now - mark.time < 1.5 {
+                let age = max(0, now - mark.time)
                 let head = point(center, radius, theta - span * 0.4)
-                NSColor.neonCyan.withAlphaComponent(CGFloat(1 - age / 2)).setFill()
+                waveColor(node, fraction: 1).withAlphaComponent(CGFloat(1 - age / 2)).setFill()
                 NSBezierPath(ovalIn: NSRect(x: head.x - 2, y: head.y - 2, width: 4, height: 4)).fill()
             }
         }
+    }
+
+    private func waveColor(_ node: Node, fraction: CGFloat) -> NSColor {
+        guard node.live else { return .neonMuted }
+        if node.critical { return .neonRed }
+        if wavePalette == "status" { return node.color }
+        let pair: (NSColor, NSColor)
+        switch wavePalette {
+        case "ice": pair = ThemePalette.light ? (ThemePalette.rgb(0x126EA5), ThemePalette.rgb(0x3558B8)) : (ThemePalette.rgb(0x63E5FF), ThemePalette.rgb(0x7994FF))
+        case "aurora": pair = ThemePalette.light ? (ThemePalette.rgb(0x6949B8), ThemePalette.rgb(0xA4377D)) : (ThemePalette.rgb(0xBD9CFF), ThemePalette.rgb(0xF38AC5))
+        case "ember": pair = ThemePalette.light ? (ThemePalette.rgb(0xA65B00), ThemePalette.rgb(0xC13B32)) : (ThemePalette.rgb(0xFFD187), ThemePalette.rgb(0xFF8B7B))
+        default: pair = (ThemePalette.accent, ThemePalette.violet)
+        }
+        return pair.0.blended(withFraction: min(1, max(0, fraction)), of: pair.1) ?? pair.0
     }
 
     private func drawHub(_ center: NSPoint, time: CGFloat, reducedMotion: Bool) {

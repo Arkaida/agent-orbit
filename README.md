@@ -43,10 +43,13 @@ Monitor **Codex CLI and Claude Code CLI sessions** from a compact always-on-top 
 - **关注重要会话**：分别配置本机和远端关注列表；关闭设置后继续监控。
 - **收起成会话环**：点击展开，拖动移动；会话名沿边缘排列，多会话自动双圈。
 - **完成与异常提醒**：分别控制声音，恢复后自动移除旧异常，不展示执行历史。
-- **换一种外观**：四套皮肤，会话文字与悬浮球配色同步刷新；可调整置顶、透明度、悬浮球尺寸，以及摘要、子任务数量的显示开关。
+- **换一种外观**：四套皮肤，会话名默认跟随皮肤，状态弧与标记保留等待、运行和异常的颜色含义；可调整置顶、透明度、悬浮球尺寸及显示内容。
+- **自定义外围声浪**：选择随皮肤、柱形、曲线、光点或关闭；分别设置配色、高度与密度。声浪随真实输出活动变化。
 - **保留原工作方式**：远端卡片进入原 tmux 会话，本机卡片唤起 Codex 客户端。
 
 <img src="docs/media/themes.png" width="100%" alt="Neon, Aurora, Graphite and Daylight themes">
+
+<img src="docs/media/wave-styles.png" width="100%" alt="Waveform styles and palettes using synthetic CLI session data">
 
 ## 安装
 

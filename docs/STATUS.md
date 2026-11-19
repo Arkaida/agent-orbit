@@ -43,3 +43,14 @@ Collectors read local files / tmux output. There is no telemetry, HTTP listener,
 cloud account, hook installation or third-party Python dependency. Local Codex
 formats are not a stable public API; unsupported records remain unconfirmed.
 The diagnostic log contains connection metadata, not conversation bodies.
+
+## Activity visualization
+
+The floating ring's waveform uses recent output or log changes. Its style,
+palette, height and density change only the presentation; they do not change
+sampling, completion detection or error alerts. A quiet waveform is not proof
+that a task has completed, and its height is not CPU usage, token throughput
+or reasoning efficiency. Turning it off leaves session monitoring active.
+
+Session names follow the selected theme by default. Status arcs and markers
+retain their waiting, running and error colors.
