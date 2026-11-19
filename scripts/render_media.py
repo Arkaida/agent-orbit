@@ -100,7 +100,7 @@ def main():
         text(d,(x+8,26),title,19,CYAN)
         place(themes,images['panel-'+key],(x,70),286)
     themes.save(output/'themes.png')
-    styles = [('bars','声浪柱'), ('curve','连续曲线'), ('dots','节奏光点'),
+    styles = [('bars','全息分段柱'), ('curve','连续曲线'), ('dots','节奏光点'),
               ('plasma','等离子双波'), ('aurora','极光光带'), ('radar','雷达涟漪')]
     if all((args.input / ('orbit-wave-' + key + '.png')).exists() for key, _ in styles):
         waves = Image.new('RGB', (1280, 840), '#060b16'); wave_draw = ImageDraw.Draw(waves)

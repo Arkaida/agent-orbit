@@ -164,7 +164,7 @@ struct SettingsView: View {
             Section("外围声浪") {
                 Picker("样式", selection: $draft.waveStyle) {
                     Text("跟随皮肤").tag("theme")
-                    Text("声浪柱").tag("bars")
+                    Text("全息声浪柱 · 分段峰值").tag("bars")
                     Text("连续曲线").tag("curve")
                     Text("节奏光点").tag("dots")
                     Text("等离子双波 · 多层粒子").tag("plasma")

@@ -57,7 +57,7 @@ https://github.com/user-attachments/assets/13b256c0-9bb2-414b-a473-045c255d25ad
 - **两种悬浮球**：小号球显示待响应和最长等待，完整球显示圆周会话名；单击切换大小，双击打开面板，拖动移动，多会话自动双圈。
 - **完成与异常提醒**：分别控制声音，恢复后自动移除旧异常，不展示执行历史。
 - **统一状态配色**：四套皮肤；名字、状态文字、圆弧与标记使用同一套状态色，可选择皮肤状态色或经典状态色。另可调整置顶、透明度、悬浮球尺寸及显示内容。
-- **自定义外围声浪**：选择随皮肤、柱形、曲线、光点，以及等离子双波、极光光带、雷达涟漪；分别设置配色、高度与密度。声浪随真实输出活动变化；圆周名字下显示累计闲／跑时长。
+- **自定义外围声浪**：选择随皮肤、全息分段声浪柱、曲线、光点，以及等离子双波、极光光带、雷达涟漪；分别设置配色、高度与密度。声浪随真实输出活动变化；圆周名字下显示累计闲／跑时长。
 - **全局用量总览**：查看会话运行占比、实时消耗、累计 Token、上游输出速度和工具完成速度；读取 CLI 实际用量记录，标明统计覆盖范围。[指标口径](docs/METRICS.md)
 - **保留原工作方式**：远端卡片进入原 tmux 会话，本机卡片唤起 Codex 客户端。
 
@@ -69,6 +69,10 @@ https://github.com/user-attachments/assets/13b256c0-9bb2-414b-a473-045c255d25ad
 <img src="docs/media/state-colors.png" width="100%" alt="Six distinct session state colors across four native skins, using synthetic data">
 
 <img src="docs/media/wave-styles.png" width="100%" alt="Waveform styles and palettes using synthetic CLI session data">
+
+<img src="docs/media/spectrum-bars.gif" width="280" alt="Holographic segmented output bars with peak caps and event-driven trails; synthetic CLI demo">
+
+全息声浪柱：分段柱身、亮色细芯、峰值短帽与输出触发的短拖尾。[四套皮肤预览](docs/media/spectrum-skins.png)
 
 ## 安装
 

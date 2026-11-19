@@ -282,7 +282,7 @@ final class BubbleView: NSView {
         if !nodes.contains(where: { $0.key == hoveredName }) { hoveredName = nil }
         configureRings()
         let style = ThemePalette.waveStyle(waveStyle)
-        let padding: CGFloat = style == "off" ? 23 : ["plasma", "aurora"].contains(style) ? ceil(26 + 7 * waveHeight) :
+        let padding: CGFloat = style == "off" ? 23 : style == "bars" ? ceil(26 + 12 * waveHeight) : ["plasma", "aurora"].contains(style) ? ceil(26 + 7 * waveHeight) :
             style == "radar" ? ceil(26 + 9 * waveHeight) : max(32, 18 + 12 * waveHeight + 3)
         fullDiameter = ceil((orbitRadius + padding) * 2)
         applySize()
@@ -515,6 +515,10 @@ final class BubbleView: NSView {
     private func drawWaves(_ center: NSPoint, ring: Ring, inner: Bool, now: TimeInterval, reducedMotion: Bool) {
         guard waveStyle != "off" else { return }
         let style = ThemePalette.waveStyle(waveStyle)
+        if style == "bars" {
+            drawSpectrumBars(center, ring: ring, inner: inner, now: now, reducedMotion: reducedMotion)
+            return
+        }
         if ["plasma", "aurora", "radar"].contains(style) {
             drawLayeredWaves(center, ring: ring, inner: inner, now: now, reducedMotion: reducedMotion, style: style)
             return
@@ -591,6 +595,107 @@ final class BubbleView: NSView {
                 let head = point(center, radius, theta - span * 0.4)
                 waveColor(node, fraction: 1).withAlphaComponent(CGFloat(1 - age / 2)).setFill()
                 NSBezierPath(ovalIn: NSRect(x: head.x - 2, y: head.y - 2, width: 4, height: 4)).fill()
+            }
+        }
+    }
+
+    private func drawSpectrumBars(_ center: NSPoint, ring: Ring, inner: Bool, now: TimeInterval,
+                                  reducedMotion: Bool) {
+        let radius = ring.radius + (inner ? 16 : 18)
+        let span = CGFloat.pi * 2 / CGFloat(max(1, ring.indices.count))
+        let scale: CGFloat = inner ? 0.42 : 1
+        for (slot, nodeIndex) in ring.indices.enumerated() {
+            let node = nodes[nodeIndex]
+            let theta = angle(slot, ring)
+            let baseCount = max(12, min(48, Int(span * radius * 0.8 / 3.2)))
+            let count = max(8, min(72, Int((CGFloat(baseCount) * waveDensity).rounded())))
+            let spacing = radius * span * 0.8 / CGFloat(max(1, count - 1))
+            let width = min(inner ? 1.55 : 2.55, max(0.65, spacing * 0.52))
+            let bucket = 24 / Double(count)
+            let marks = outputMarks[node.key] ?? []
+            let recent = marks.contains { now - $0.time >= 0 && now - $0.time < 2.5 }
+            let anchor = reducedMotion || !recent ? marks.last?.time ?? now : now
+            let end = floor(anchor / bucket) * bucket + bucket
+            // Every temporal effect is tied to observed output. Freezing this
+            // clock also freezes peaks, glow and tails for Reduce Motion.
+            let visualTime = reducedMotion ? marks.last?.time ?? now : now
+            let rail = NSBezierPath()
+            rail.appendArc(withCenter: center, radius: radius - 1.5,
+                           startAngle: (theta - span * 0.41) * 180 / .pi,
+                           endAngle: (theta + span * 0.41) * 180 / .pi)
+            waveColor(node, fraction: 0).withAlphaComponent(node.live ? 0.12 : 0.055).setStroke()
+            rail.lineWidth = 0.55; rail.stroke()
+            var previousPeak: NSPoint?
+            for index in 0..<count {
+                let fraction = CGFloat(index) / CGFloat(max(1, count - 1))
+                let barAngle = theta + span * (0.4 - fraction * 0.8)
+                let start = end - Double(count - index) * bucket
+                let events = marks.filter { $0.time >= start && $0.time < start + bucket }
+                let amount = events.reduce(0) { $0 + $1.amount }
+                let color = waveColor(node, fraction: fraction)
+                let base = point(center, radius, barAngle)
+                guard node.live && node.running && amount > 0 else {
+                    color.withAlphaComponent(node.live ? 0.13 : 0.065).setFill()
+                    NSBezierPath(ovalIn: NSRect(x: base.x - 0.4, y: base.y - 0.4, width: 0.8, height: 0.8)).fill()
+                    previousPeak = nil
+                    continue
+                }
+                let energy = outputLevel(Double(amount) / bucket)
+                let height = (inner ? 1.7 + energy * 3.3 : 2.2 + energy * 9.8) * waveHeight
+                let age = max(0, visualTime - (events.last?.time ?? visualTime))
+                let flash = CGFloat(max(0, 1 - age / 1.8))
+                let opacity: CGFloat = 0.35 + fraction * 0.46
+                let bright = color.blended(withFraction: 0.48, of: ThemePalette.ns(.text)) ?? color
+                let trail = NSBezierPath()
+                trail.move(to: base)
+                trail.line(to: point(center, radius + height + flash * 3 * scale, barAngle))
+                color.withAlphaComponent(0.055 + flash * 0.085).setStroke()
+                trail.lineWidth = min(spacing * 0.8, width + 1.8 * scale)
+                trail.lineCapStyle = .round; trail.stroke()
+
+                // Batch all segments of one column into a path. Gaps keep
+                // high-density rings legible without a broad continuous glow.
+                let segments = NSBezierPath()
+                let pitch: CGFloat = inner ? 1.95 : 2.8
+                var offset: CGFloat = 0
+                while offset < height {
+                    let stop = min(height, offset + pitch * 0.64)
+                    segments.move(to: point(center, radius + offset, barAngle))
+                    segments.line(to: point(center, radius + stop, barAngle))
+                    offset += pitch
+                }
+                segments.lineCapStyle = .butt
+                color.withAlphaComponent(opacity).setStroke(); segments.lineWidth = width; segments.stroke()
+                bright.withAlphaComponent(0.36 + flash * 0.32).setStroke()
+                segments.lineWidth = min(0.6, width * 0.38); segments.stroke()
+
+                let tip = point(center, radius + height, barAngle)
+                let peak = point(center, radius + height + (0.8 + flash * 2.2) * scale, barAngle)
+                let tangent = NSPoint(x: -sin(barAngle), y: cos(barAngle))
+                let halfCap = min(spacing * 0.34, width * 0.72 + 0.25)
+                let cap = NSBezierPath()
+                cap.move(to: NSPoint(x: peak.x - tangent.x * halfCap, y: peak.y - tangent.y * halfCap))
+                cap.line(to: NSPoint(x: peak.x + tangent.x * halfCap, y: peak.y + tangent.y * halfCap))
+                color.withAlphaComponent(0.13 + flash * 0.16).setStroke()
+                cap.lineWidth = 2 * scale + 0.4; cap.lineCapStyle = .round; cap.stroke()
+                bright.withAlphaComponent(0.55 + flash * 0.4).setStroke(); cap.lineWidth = 0.65; cap.stroke()
+                if let previous = previousPeak {
+                    let crown = NSBezierPath(); crown.move(to: previous); crown.line(to: peak)
+                    color.withAlphaComponent(0.13 + flash * 0.1).setStroke()
+                    crown.lineWidth = 0.5; crown.stroke()
+                }
+                previousPeak = peak
+                if !inner {
+                    let reflection = NSBezierPath(); reflection.move(to: base)
+                    reflection.line(to: point(center, radius - min(2.2, height * 0.15), barAngle))
+                    color.withAlphaComponent(opacity * 0.19).setStroke()
+                    reflection.lineWidth = width * 0.8; reflection.stroke()
+                }
+                if flash > 0 {
+                    bright.withAlphaComponent(flash * 0.8).setFill()
+                    let dot: CGFloat = inner ? 0.55 : 0.75
+                    NSBezierPath(ovalIn: NSRect(x: tip.x - dot, y: tip.y - dot, width: dot * 2, height: dot * 2)).fill()
+                }
             }
         }
     }
