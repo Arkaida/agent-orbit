@@ -84,11 +84,12 @@ enum ThemePalette {
     static var surface: NSColor { rgb(light ? 0xFFFFFF : current == "aurora" ? 0x20132F : current == "graphite" ? 0x1C2025 : 0x0B1421) }
     static var accent: NSColor { rgb(light ? 0x136FBA : current == "aurora" ? 0xBD9CFF : current == "graphite" ? 0x88C5D6 : 0x3DD9FF) }
     static var violet: NSColor { rgb(light ? 0x7856C7 : current == "aurora" ? 0xF38AC5 : 0x976EFF) }
-    static var text: NSColor { rgb(light ? 0x15263E : 0xE0F0FF) }
-    static var muted: NSColor { rgb(light ? 0x52677F : 0x82A1C2) }
-    static var green: NSColor { rgb(light ? 0x087A4F : 0x57FFB2) }
-    static var amber: NSColor { rgb(light ? 0x986000 : 0xFFBA59) }
-    static var red: NSColor { rgb(light ? 0xC52B45 : 0xFF5775) }
+    // Keep status meanings consistent, with a readable shade for each skin.
+    static var text: NSColor { rgb(light ? 0x15263E : current == "aurora" ? 0xF3E8FF : current == "graphite" ? 0xE4E7EC : 0xE0F0FF) }
+    static var muted: NSColor { rgb(light ? 0x52677F : current == "aurora" ? 0xB5A1D0 : current == "graphite" ? 0x9DA8B5 : 0x82A1C2) }
+    static var green: NSColor { rgb(light ? 0x087A4F : current == "aurora" ? 0x83E7BE : current == "graphite" ? 0x9CD4B2 : 0x57FFB2) }
+    static var amber: NSColor { rgb(light ? 0x986000 : current == "aurora" ? 0xF7C98B : current == "graphite" ? 0xD8BB89 : 0xFFBA59) }
+    static var red: NSColor { rgb(light ? 0xC52B45 : current == "aurora" ? 0xFF8FAE : current == "graphite" ? 0xE58D9C : 0xFF5775) }
 }
 
 struct SettingsView: View {

@@ -364,5 +364,8 @@ struct PanelView: View {
         .overlay(RoundedRectangle(cornerRadius: 11).stroke(LinearGradient(colors: [Neon.cyan.opacity(0.55), Neon.violet.opacity(0.18), Neon.cyan.opacity(0.22)], startPoint: .topLeading, endPoint: .bottomTrailing), lineWidth: 1).allowsHitTesting(false))
         .clipShape(RoundedRectangle(cornerRadius: 11))
         .preferredColorScheme(ThemePalette.scheme)
+        // Leaf views read the palette without observing the model. Rebuild them
+        // on a skin change even when the monitored session values are unchanged.
+        .id(model.settings.theme)
     }
 }

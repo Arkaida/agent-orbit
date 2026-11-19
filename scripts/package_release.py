@@ -4,13 +4,27 @@ import hashlib
 from pathlib import Path
 import platform
 import plistlib
+import re
 import subprocess
 import zipfile
 
 ROOT = Path(__file__).resolve().parents[1]
 APP = ROOT / 'Agent Orbit.app'
 with (ROOT / 'desktop/Info.plist').open('rb') as file:
-    VERSION = plistlib.load(file)['CFBundleShortVersionString']
+    source_info = plistlib.load(file)
+VERSION = source_info['CFBundleShortVersionString']
+with (APP / 'Contents/Info.plist').open('rb') as file:
+    app_info = plistlib.load(file)
+if any(app_info[key] != source_info[key] for key in ('CFBundleShortVersionString', 'CFBundleVersion', 'LSMinimumSystemVersion')):
+    raise RuntimeError('Application version differs from the source; rebuild before packaging')
+build_info = subprocess.check_output(['/usr/bin/xcrun', 'vtool', '-show-build',
+                                     str(APP / 'Contents/MacOS' / app_info['CFBundleExecutable'])], text=True)
+minimums = re.findall(r'^\s*minos\s+([0-9.]+)\s*$', build_info, re.MULTILINE)
+def version(value):
+    parts = tuple(int(part) for part in value.split('.'))
+    return parts + (0,) * max(0, 3 - len(parts))
+if not minimums or any(version(value) > version(app_info['LSMinimumSystemVersion']) for value in minimums):
+    raise RuntimeError('Application requires a newer macOS than declared; rebuild with the configured deployment target')
 OUTPUT = ROOT / 'dist'
 OUTPUT.mkdir(exist_ok=True)
 files = [ROOT / name for name in ('agent-orbit', 'codex-remote', 'shortcuts.zsh', 'build_desktop.sh', 'Makefile',
