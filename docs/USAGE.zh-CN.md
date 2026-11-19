@@ -64,6 +64,12 @@ macOS 个人数据保存于 `~/Library/Application Support/Agent Orbit/`：
 
 设置示例见 [settings.example.json](../settings.example.json)。保存后生效，变更连接参数时仅重新连接对应来源。皮肤和显示选项不会重启远端 Agent。
 
+## 启动与连接检查
+
+首次连接失败时，面板会显示主机、网络、认证或设置错误，并提供“检查设置”入口。请核对 SSH 主机是否与终端中正常使用的别名一致，以及 tmux Socket 是否正确。修正并保存后会自动重连。
+
+无效设置也会显示具体原因，修正后可自动恢复；不会一直停在初始化。禁用本机监控后，远端连接失败不会自动启用本机来源。
+
 ## JSONL 接口
 
 ```bash

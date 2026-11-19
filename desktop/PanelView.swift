@@ -308,9 +308,9 @@ struct PanelView: View {
             HStack(spacing: 5) {
                 Circle().fill(model.connected && model.connectionState != "partial" ? Neon.cyan : Neon.amber).frame(width: 4, height: 4)
                     .shadow(color: Neon.cyan.opacity(0.7), radius: 4)
-                Text(model.message).font(.system(size: 9)).lineLimit(1)
+                Text(model.message).font(.system(size: 9)).lineLimit(1).help(model.message)
                 Spacer()
-                Text(model.connectionState == "partial" ? "PARTIAL" : model.connected ? "LIVE" : model.connectionState == "delayed" ? "WAITING" : "CONNECTING").font(.system(size: 8, weight: .semibold, design: .monospaced)).tracking(1.3)
+                Text(model.connectionState == "partial" ? "PARTIAL" : model.connected ? "LIVE" : model.connectionState == "config_error" ? "SETTINGS" : model.connectionNeedsAttention ? "ERROR" : model.connectionState == "delayed" ? "WAITING" : "CONNECTING").font(.system(size: 8, weight: .semibold, design: .monospaced)).tracking(1.3)
             }.foregroundColor(Neon.muted)
         }.padding(.horizontal, 11).padding(.bottom, 8)
     }
@@ -338,7 +338,12 @@ struct PanelView: View {
                     if model.rows.isEmpty {
                         VStack(spacing: 11) {
                             Image(systemName: "antenna.radiowaves.left.and.right").font(.system(size: 22)).foregroundColor(Neon.cyan.opacity(0.6))
-                            Text(model.connected ? "没有找到会话" : "正在读取关注的会话…").font(.system(size: 11)).foregroundColor(Neon.muted)
+                            Text(model.connected ? "没有找到会话" : model.connectionNeedsAttention ? "监控尚未连接" : "正在读取关注的会话…").font(.system(size: 11)).foregroundColor(Neon.muted)
+                            if model.connectionNeedsAttention {
+                                Text(model.message).font(.system(size: 11)).foregroundColor(Neon.amber)
+                                    .multilineTextAlignment(.center).fixedSize(horizontal: false, vertical: true)
+                                Button("检查设置") { model.onSettings?() }.buttonStyle(.bordered)
+                            }
                         }.frame(maxWidth: .infinity).padding(.vertical, 55)
                     }
                     ForEach(model.rows) { pane in

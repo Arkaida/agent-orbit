@@ -11,7 +11,7 @@ from completion_tracker import CompletionTracker
 from activity_tracker import ActivityTracker
 from error_tracker import ErrorTracker
 from monitor import Model, Stream, LocalStream
-from configuration import data_dir, load_settings, read_follow as configured_follow
+from configuration import data_dir, defaults, load_settings, read_follow as configured_follow
 
 
 def read_follow(root):
@@ -24,7 +24,7 @@ def connection_status(stream, model, config_error, now):
     if config_error:
         status, message = 'config_error', config_error
     elif stream.error:
-        status, message = 'reconnecting', '连接断开，正在重连'
+        status, message = 'reconnecting', connection_failure_message(stream)
     elif model.remote_error:
         status, message = 'remote_error', '远端采样异常，等待恢复'
     elif stream.process is None:
@@ -36,6 +36,45 @@ def connection_status(stream, model, config_error, now):
     else:
         status, message = 'live', '已连接 · 实时监控'
     return dict(connection_state=status, connected=status == 'live', message=message, received_age=age)
+
+
+def connection_failure_message(stream):
+    """Show an actionable transport reason without exposing arbitrary SSH output."""
+    if stream.host == '本机':
+        return '本机监控已退出，正在重试；请检查数据目录'
+    error = stream.error.lower()
+    if 'could not resolve hostname' in error or 'name or service not known' in error:
+        return 'SSH 主机不存在，请在设置中检查主机名'
+    if 'no route to host' in error or 'network is unreachable' in error:
+        return '无法访问 SSH 主机，请检查主机设置和网络'
+    if 'connection refused' in error:
+        return 'SSH 连接被拒绝，请检查主机和端口'
+    if 'permission denied' in error:
+        return 'SSH 认证失败，请检查密钥与主机设置'
+    if 'host key verification failed' in error:
+        return 'SSH 主机验证失败，请先在终端确认主机身份'
+    if 'timed out' in error or 'timeout' in error:
+        return 'SSH 连接超时，请检查主机设置和网络'
+    return 'SSH 连接断开，正在重连；请检查连接设置'
+
+
+def aggregate_connection_status(connections, config_error):
+    """Keep initialization, failed connections and invalid settings distinct."""
+    if config_error:
+        return dict(connected=False, connection_state='config_error',
+                    message=config_error + '；请打开设置修正')
+    live = sum(connection['connected'] for connection in connections)
+    if live and live == len(connections):
+        status = 'live'
+    elif live:
+        status = 'partial'
+    else:
+        states = {connection['connection_state'] for connection in connections}
+        status = next((state for state in ('config_error', 'monitor_error', 'remote_error',
+                                          'reconnecting', 'delayed') if state in states), 'connecting')
+    message = ' · '.join(connection['label'] + '：' + connection['message']
+                         for connection in connections) or '正在准备监控来源…'
+    return dict(connected=live > 0, connection_state=status, message=message)
 
 
 def diagnostic_event(root, event, **fields):
@@ -140,7 +179,11 @@ def run(args):
     root = Path(__file__).resolve().parent
     runtimes = {}
     next_config, config_error, stopping = 0, '', False
-    settings = load_settings(root)
+    # Invalid settings must still produce a first frame so the UI can explain
+    # the error and recover when the user saves a corrected file. No source is
+    # started until load_settings and the follow list have both validated.
+    settings = defaults(root)
+    selected = []
 
     def stop(*_):
         nonlocal stopping
@@ -206,11 +249,10 @@ def run(args):
                     runtime['last_health'] = key
                 chunks.append(source_payload(name, state, health, focus))
                 connections.append(dict(id=name, label='远端' if name == 'remote' else '本机', **health))
-            live = sum(connection['connected'] for connection in connections)
+            health = aggregate_connection_status(connections, config_error)
             payload = {key: [item for chunk in chunks for item in chunk[key]] for key in ('rows', 'events', 'error_events', 'active_error_events')}
-            payload.update(followed=selected if 'selected' in locals() else [], host=settings['host'] if settings['remote_enabled'] else '本机',
-                           connected=live > 0, connection_state='live' if live == len(connections) and live else 'partial' if live else 'connecting',
-                           message=' · '.join(c['label'] + ('已连接' if c['connected'] else '等待连接') for c in connections) if not config_error else config_error,
+            payload.update(followed=selected, host=settings['host'] if settings['remote_enabled'] else '本机',
+                           **health,
                            received_frames=sum(r['stream'].total_frames for r in runtimes.values()), emitted_at=time.time(),
                            connections=connections, local_sessions=discovered)
             print(json.dumps(payload, ensure_ascii=False), flush=True)

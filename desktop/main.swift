@@ -154,6 +154,9 @@ final class PanelModel: ObservableObject {
     private var localOutageAlerted = false
     private let readQueue = DispatchQueue(label: "codex-remote.json")
     private var buffer = Data()
+    var connectionNeedsAttention: Bool {
+        ["config_error", "monitor_error", "remote_error", "reconnecting", "partial"].contains(connectionState)
+    }
     var criticalCount: Int {
         Set(rows.filter { $0.isCritical && connected && $0.available != false }.map(\.paneId) + unreadErrors.filter { $0.isCritical && !isResolved($0) }.map(\.paneId)).count
     }
@@ -273,6 +276,7 @@ final class PanelModel: ObservableObject {
             try child.run()
         } catch {
             connected = false
+            connectionState = "monitor_error"
             message = "无法启动监控：\(error.localizedDescription)"
             DispatchQueue.main.asyncAfter(deadline: .now() + 2) { [weak self] in
                 guard let self = self, !self.stopped else { return }
