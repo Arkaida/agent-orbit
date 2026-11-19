@@ -47,7 +47,7 @@ class ConfigurationTests(unittest.TestCase):
             loaded = load_settings()
             self.assertEqual((loaded['orbit_label_color'], loaded['wave_style'], loaded['wave_palette']),
                              ('theme', 'theme', 'theme'))
-            self.assertEqual((loaded['wave_height'], loaded['wave_density']), (1.0, 1.0))
+            self.assertEqual((loaded['wave_height'], loaded['wave_density']), (1.3, 1.0))
             self.assertFalse(loaded['local_enabled'])
             self.assertTrue(loaded['remote_enabled'])
             self.assertEqual((loaded['host'], loaded['theme']), ('myserver', 'aurora'))
@@ -87,3 +87,64 @@ class ConfigurationTests(unittest.TestCase):
             with self.subTest(change=change):
                 with self.assertRaises(ValueError): validate(dict(defaults(), **change))
         self.assertEqual(validate(dict(defaults(), remote_enabled=True, host='user@my-host'))['host'], 'user@my-host')
+
+    def test_reminder_preferences_migrate_without_rewriting_and_round_trip(self):
+        with tempfile.TemporaryDirectory() as folder, patch.dict(os.environ, AGENT_ORBIT_DATA_DIR=folder, CODEX_REMOTE_DATA_DIR=''):
+            path = Path(folder) / 'settings.json'
+            original = '{"version":1,"local_enabled":true,"theme":"graphite"}\n'
+            path.write_text(original)
+            loaded = load_settings()
+            self.assertEqual((loaded['wait_reminder_enabled'], loaded['wait_reminder_minutes'], loaded['wait_reminder_sound']), (True, 5, True))
+            self.assertEqual(path.read_text(), original)
+            loaded.update(wait_reminder_enabled=False, wait_reminder_minutes=12, wait_reminder_sound=False)
+            atomic_json(path, loaded)
+            restored = load_settings()
+            self.assertEqual((restored['wait_reminder_enabled'], restored['wait_reminder_minutes'], restored['wait_reminder_sound']), (False, 12, False))
+
+    def test_reminder_controls_reject_invalid_types_and_thresholds(self):
+        for field in ['wait_reminder_enabled', 'wait_reminder_sound']:
+            for invalid in [None, 0, 1, 'true']:
+                with self.subTest(field=field, invalid=invalid):
+                    with self.assertRaises(ValueError):
+                        validate(dict(defaults(), **{field: invalid}))
+        for invalid in [0, -1, 121, float('nan'), float('inf'), True, '5']:
+            with self.subTest(minutes=invalid):
+                with self.assertRaises(ValueError):
+                    validate(dict(defaults(), wait_reminder_minutes=invalid))
+        for valid in [1, 5, 120]:
+            self.assertEqual(validate(dict(defaults(), wait_reminder_minutes=valid))['wait_reminder_minutes'], valid)
+
+    def test_groups_are_opt_in_and_round_trip_with_cross_source_members(self):
+        self.assertEqual(defaults()['session_groups'], [])
+        with tempfile.TemporaryDirectory() as folder, patch.dict(os.environ, AGENT_ORBIT_DATA_DIR=folder, CODEX_REMOTE_DATA_DIR=''):
+            path = Path(folder) / 'settings.json'
+            path.write_text('{"version":1,"theme":"aurora"}')
+            self.assertEqual(load_settings()['session_groups'], [])
+            groups = [dict(id='work-pair', name='实验组', members=['remote:atlas', 'local:thread-alpha'])]
+            settings = validate(dict(load_settings(), session_groups=groups))
+            atomic_json(path, settings)
+            self.assertEqual(load_settings()['session_groups'], groups)
+            settings['session_groups'] = []
+            atomic_json(path, settings)
+            self.assertEqual(load_settings()['session_groups'], [])
+
+    def test_group_members_cannot_overlap_or_have_invalid_identities(self):
+        def group(**changes):
+            return dict(dict(id='pair', name='Work', members=['remote:atlas', 'local:thread-alpha']), **changes)
+        invalid = [None, {}, [None], [group(id='')], [group(name=' ')],
+                   [group(id='a\nb')], [group(name='x' * 41)], [group(name='👩‍💻' * 20)], [group(members=['remote:atlas'])],
+                   [group(members=['remote:atlas', 'remote:atlas'])],
+                   [group(members=['remote:atlas', 'local:'])],
+                   [group(members=['remote:atlas', 'other:beta'])],
+                   [group(members=['remote:atlas', 4])],
+                   [group(), group(id='another')],
+                   [group(), group(members=['remote:beta', 'remote:gamma'])]]
+        for groups in invalid:
+            with self.subTest(groups=groups):
+                with self.assertRaises(ValueError):
+                    validate(dict(defaults(), session_groups=groups))
+
+    def test_new_wave_styles_and_compact_defaults_are_available(self):
+        self.assertEqual((defaults()['bubble_scale'], defaults()['wave_height']), (.85, 1.3))
+        for style in ['plasma', 'aurora', 'radar']:
+            self.assertEqual(validate(dict(defaults(), wave_style=style))['wave_style'], style)

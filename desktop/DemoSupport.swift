@@ -23,6 +23,33 @@ enum DemoSupport {
         var rows: [[String: Any]] = []
         for i in 0..<3 {
             let local = i == 1
+            let isRunning = states[i] == "running"
+            let isError = states[i] == "error"
+            let elapsed = isRunning ? Double(640 + step * 2) : i == 0 ? Double(max(0, step - 8) * 45 + 20) : Double(420 + step * 5)
+            let idleSeconds = Double(420 + i * 60 + step * 5)
+            let runSeconds = Double(1200 + i * 100 + step * 2)
+            let response: [String: Any] = [
+                "kind": isError ? "unknown" : isRunning ? "running" : "waiting",
+                "episode_id": isRunning || isError ? NSNull() : "demo-response-\(i)-1",
+                "since": isError ? NSNull() : 1_700_000_000.0 - elapsed,
+                "elapsed_seconds": isError ? NSNull() : elapsed,
+                "observed": !isError && (isRunning || i == 2), "overdue": !isRunning && !isError && elapsed >= 300,
+                "idle_seconds": idleSeconds, "run_seconds": runSeconds,
+                "idle_run_ratio": idleSeconds / runSeconds, "efficiency_percent": runSeconds / (idleSeconds + runSeconds) * 100,
+                "scope": "observed_monitoring", "reminder_suppressed": false
+            ]
+            let rootUsage: [String: Any] = [
+                "usage_covered": 1, "tools_covered": 1, "usage_sessions": 1,
+                "live_usage_covered": 1, "live_tools_covered": 1, "scope": "root_session",
+                "input_tokens": 50_000 + i * 7_000 + step * 80,
+                "output_tokens": 4_100 + i * 600 + step * 13,
+                "total_tokens": 54_100 + i * 7_600 + step * 93,
+                "cached_input_tokens": 35_000 + i * 6_000, "cache_write_input_tokens": 3_200,
+                "consumption_per_second": isRunning ? 31.5 + Double(i * 8) : 0,
+                "upstream_tokens_per_second": isRunning ? 5.8 + Double(i * 2) : 0,
+                "tools_per_minute": isRunning ? 1.0 + Double(i) : 0,
+                "window_seconds": 30, "work_window_seconds": 60
+            ]
             rows.append([
                 "pane_id": local ? "local:demo-ab12" : "remote:%\(i)",
                 "group_id": local ? "local:demo-ab12" : "remote:\(names[i])",
@@ -38,22 +65,26 @@ enum DemoSupport {
                 "activity_epoch": 1, "activity_age": 0.3, "activity_source": "log",
                 "background_agents": i == 1 ? 2 : 0, "background_agents_total": i == 1 ? 3 : 0,
                 "background_terminals": i == 0 ? 2 : 0, "background_agents_observable": true,
-                "background_terminals_observable": !local
+                "background_terminals_observable": !local,
+                "response": response, "usage_metrics": rootUsage
             ])
         }
         let connection: [[String: Any]] = ["remote", "local"].map {
             ["id": $0, "label": $0 == "local" ? "本机" : "远端", "connected": true, "connection_state": "live", "message": "演示数据"]
         }
         let running = states.filter { $0 == "running" }.count
+        let roots = rows.compactMap { $0["usage_metrics"] as? [String: Any] }
+        func usageSum(_ key: String) -> Int { roots.reduce(0) { $0 + ($1[key] as? Int ?? 0) } }
+        func rate(_ key: String) -> Double { roots.reduce(0) { $0 + ($1[key] as? Double ?? 0) } }
         let usage: [String: Any] = [
             "utilization_percent": Double(running) / 3 * 100,
             "running_sessions": running, "known_sessions": 3, "monitored_sessions": 3,
             "usage_covered": 3, "tools_covered": 3, "usage_sessions": 3,
-            "total_tokens": 186_420 + step * 280, "input_tokens": 172_320 + step * 240,
-            "output_tokens": 14_100 + step * 40, "cached_input_tokens": 125_800,
-            "cache_write_input_tokens": 11_200, "consumption_per_second": 62.4 + Double(step % 5) * 8.5,
-            "upstream_tokens_per_second": 9.3 + Double(step % 4) * 2.1,
-            "tools_per_minute": 4.0 + Double(step % 3), "live_usage_covered": 3,
+            "total_tokens": usageSum("total_tokens"), "input_tokens": usageSum("input_tokens"),
+            "output_tokens": usageSum("output_tokens"), "cached_input_tokens": usageSum("cached_input_tokens"),
+            "cache_write_input_tokens": usageSum("cache_write_input_tokens"), "consumption_per_second": rate("consumption_per_second"),
+            "upstream_tokens_per_second": rate("upstream_tokens_per_second"),
+            "tools_per_minute": rate("tools_per_minute"), "live_usage_covered": 3,
             "live_tools_covered": 3, "window_seconds": 30, "work_window_seconds": 60,
             "scope": "followed_root_sessions"
         ]
@@ -67,22 +98,75 @@ enum DemoSupport {
         let decoder = JSONDecoder(); decoder.keyDecodingStrategy = .convertFromSnakeCase
         return try! decoder.decode(Snapshot.self, from: data)
     }
-    static func capture(_ view: NSView, size: NSSize, path: URL) throws {
-        let window = NSWindow(contentRect: NSRect(origin: NSPoint(x: -5000, y: -5000), size: size), styleMask: [.borderless], backing: .buffered, defer: false)
+    static func groupedSnapshot(waiting: Bool) -> Snapshot {
+        var result = snapshot(12)
+        let members = result.rows.prefix(2).map(\.monitorKey)
+        let group = SessionResponseGroup(id: "demo-shared-task", name: "同一项目", members: members,
+                                         count: 2, knownMembers: 2, runningMembers: waiting ? 0 : 1,
+                                         parallelConflict: false, kind: waiting ? "waiting" : "running",
+                                         episodeId: waiting ? "demo-shared-wait-1" : nil,
+                                         since: 1_700_000_000 - (waiting ? 360 : 640),
+                                         elapsedSeconds: waiting ? 360 : 640,
+                                         observed: true, overdue: waiting, scope: "observed_monitoring",
+                                         idleSeconds: waiting ? 480 : 120, runSeconds: waiting ? 1200 : 1800,
+                                         idleRunRatio: waiting ? 0.4 : 1.0 / 15,
+                                         efficiencyPercent: waiting ? 100.0 * 1200 / 1680 : 93.75,
+                                         reminderSuppressed: false)
+        for index in 0..<2 {
+            if waiting || index == 0 {
+                result.rows[index].state = "idle"; result.rows[index].status = "等待输入"
+                result.rows[index].response = SessionResponse(kind: "waiting", episodeId: "individual-\(index)",
+                                                              since: 1_700_000_000 - 400, elapsedSeconds: 400,
+                                                              observed: true, overdue: false, scope: "observed_monitoring",
+                                                              idleSeconds: 500, runSeconds: 1000, idleRunRatio: 0.5,
+                                                              efficiencyPercent: 66.7, reminderSuppressed: true)
+                result.rows[index].usageMetrics?.consumptionPerSecond = 0
+                result.rows[index].usageMetrics?.upstreamTokensPerSecond = 0
+                result.rows[index].usageMetrics?.toolsPerMinute = 0
+            }
+            result.rows[index].responseGroup = group
+        }
+        result.rows = Array(result.rows.prefix(2)); result.followed = ["atlas"]
+        result.metrics?.runningSessions = waiting ? 0 : 1
+        result.metrics?.utilizationPercent = waiting ? 0 : 50
+        result.metrics?.knownSessions = 2; result.metrics?.monitoredSessions = 2
+        result.metrics?.usageSessions = 2; result.metrics?.usageCovered = 2; result.metrics?.toolsCovered = 2
+        result.metrics?.liveUsageCovered = 2; result.metrics?.liveToolsCovered = 2
+        result.metrics?.inputTokens = result.rows.reduce(0) { $0 + ($1.usageMetrics?.inputTokens ?? 0) }
+        result.metrics?.outputTokens = result.rows.reduce(0) { $0 + ($1.usageMetrics?.outputTokens ?? 0) }
+        result.metrics?.totalTokens = result.rows.reduce(0) { $0 + ($1.usageMetrics?.totalTokens ?? 0) }
+        result.metrics?.cachedInputTokens = result.rows.reduce(0) { $0 + ($1.usageMetrics?.cachedInputTokens ?? 0) }
+        result.metrics?.cacheWriteInputTokens = result.rows.reduce(0) { $0 + ($1.usageMetrics?.cacheWriteInputTokens ?? 0) }
+        result.metrics?.consumptionPerSecond = result.rows.reduce(0) { $0 + ($1.usageMetrics?.consumptionPerSecond ?? 0) }
+        result.metrics?.upstreamTokensPerSecond = result.rows.reduce(0) { $0 + ($1.usageMetrics?.upstreamTokensPerSecond ?? 0) }
+        result.metrics?.toolsPerMinute = result.rows.reduce(0) { $0 + ($1.usageMetrics?.toolsPerMinute ?? 0) }
+        return result
+    }
+    static func capture(_ view: NSView, size: NSSize, path: URL, scale: CGFloat = 1) throws {
+        let logicalBounds = view.bounds
+        let isOrbit = view is BubbleView
+        let physicalSize = isOrbit ? NSSize(width: ceil(logicalBounds.width * scale), height: ceil(logicalBounds.height * scale)) : size
+        let window = NSWindow(contentRect: NSRect(origin: NSPoint(x: -5000, y: -5000), size: physicalSize), styleMask: [.borderless], backing: .buffered, defer: false)
         window.isReleasedWhenClosed = false; window.isOpaque = false; window.backgroundColor = .clear
-        view.frame = NSRect(origin: .zero, size: size); window.contentView = view
+        defer { window.orderOut(nil); window.contentView = nil; window.close() }
+        view.frame = NSRect(origin: .zero, size: physicalSize); window.contentView = view
+        if isOrbit { view.bounds = logicalBounds }
+        window.orderFrontRegardless()
+        RunLoop.current.run(until: Date().addingTimeInterval(0.02))
         view.layoutSubtreeIfNeeded(); view.displayIfNeeded()
-        guard let bitmap = view.bitmapImageRepForCachingDisplay(in: view.bounds) else { throw NSError(domain: "Demo", code: 1) }
+        guard let bitmap = NSBitmapImageRep(bitmapDataPlanes: nil, pixelsWide: Int(physicalSize.width * 2), pixelsHigh: Int(physicalSize.height * 2), bitsPerSample: 8, samplesPerPixel: 4, hasAlpha: true, isPlanar: false, colorSpaceName: .deviceRGB, bytesPerRow: 0, bitsPerPixel: 0) else { throw NSError(domain: "Demo", code: 1) }
+        // The bitmap's point coordinates must match the view's logical bounds;
+        // only its pixel dimensions use the scaled on-screen size.
+        bitmap.size = view.bounds.size
         view.cacheDisplay(in: view.bounds, to: bitmap)
         guard let bytes = bitmap.representation(using: .png, properties: [:]) else { throw NSError(domain: "Demo", code: 2) }
         try bytes.write(to: path)
-        window.contentView = nil
     }
     static func export(_ model: PanelModel, folder: URL) throws {
         try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
         // A volatile override makes exports repeatable without changing saved preferences.
         let previousArguments = UserDefaults.standard.volatileDomain(forName: UserDefaults.argumentDomain)
-        var demoArguments = previousArguments; demoArguments["usageOverviewExpanded"] = true
+        var demoArguments = previousArguments; demoArguments["sessionUsageOverviewExpanded"] = false
         UserDefaults.standard.setVolatileDomain(demoArguments, forName: UserDefaults.argumentDomain)
         defer { UserDefaults.standard.setVolatileDomain(previousArguments, forName: UserDefaults.argumentDomain) }
         for theme in ThemePalette.names {
@@ -131,14 +215,64 @@ enum DemoSupport {
         model.apply(many)
         try capture(NSHostingView(rootView: PanelView(model: model).frame(width: 320, height: 430)), size: NSSize(width: 320, height: 430), path: folder.appendingPathComponent("panel-many-metrics.png"))
         let manyBubble = BubbleView(frame: NSRect(x: 0, y: 0, width: 240, height: 240)); manyBubble.update(model)
-        try capture(manyBubble, size: NSSize(width: 240, height: 240), path: folder.appendingPathComponent("orbit-many-metrics.png"))
-        demoArguments["usageOverviewExpanded"] = false
+        try capture(manyBubble, size: NSSize(width: 240, height: 240), path: folder.appendingPathComponent("orbit-many-metrics.png"), scale: CGFloat(model.settings.bubbleScale))
+        demoArguments["sessionUsageOverviewExpanded"] = false
         UserDefaults.standard.setVolatileDomain(demoArguments, forName: UserDefaults.argumentDomain)
         model.apply(snapshot(9))
         try capture(NSHostingView(rootView: PanelView(model: model).frame(width: 300, height: 260)), size: NSSize(width: 300, height: 260), path: folder.appendingPathComponent("panel-minimum-collapsed.png"))
-        demoArguments["usageOverviewExpanded"] = true
+        demoArguments["sessionUsageOverviewExpanded"] = true
         UserDefaults.standard.setVolatileDomain(demoArguments, forName: UserDefaults.argumentDomain)
         try capture(NSHostingView(rootView: UsageOverview(metrics: model.metrics, connected: true).details), size: NSSize(width: 290, height: 530), path: folder.appendingPathComponent("usage-details.png"))
+        model.apply(snapshot(9))
+        try capture(NSHostingView(rootView: PanelView(model: model).frame(width: 320, height: 430)), size: NSSize(width: 320, height: 430), path: folder.appendingPathComponent("panel-usage-expanded.png"))
+        demoArguments["sessionUsageOverviewExpanded"] = false
+        UserDefaults.standard.setVolatileDomain(demoArguments, forName: UserDefaults.argumentDomain)
+        var waiting = snapshot(9)
+        for index in waiting.rows.indices where waiting.rows[index].response?.isPending == true {
+            waiting.rows[index].response?.elapsedSeconds = Double(45 + index * 30)
+            waiting.rows[index].response?.overdue = false
+        }
+        model.apply(waiting)
+        try capture(NSHostingView(rootView: PanelView(model: model).frame(width: 320, height: 430)), size: NSSize(width: 320, height: 430), path: folder.appendingPathComponent("panel-response-waiting.png"))
+        model.apply(snapshot(12))
+        try capture(NSHostingView(rootView: PanelView(model: model).frame(width: 320, height: 430)), size: NSSize(width: 320, height: 430), path: folder.appendingPathComponent("panel-response-overdue.png"))
+        var answered = snapshot(12)
+        for index in answered.rows.indices {
+            answered.rows[index].state = "running"; answered.rows[index].status = "运行中"
+            answered.rows[index].response = SessionResponse(kind: "running", episodeId: nil, since: 1_700_000_000, elapsedSeconds: Double(10 + index * 8), observed: true, overdue: false)
+            answered.rows[index].preview = ["已收到后续输入，继续执行新任务。"]
+            answered.rows[index].working = "正在执行后续任务"
+        }
+        answered.metrics?.runningSessions = 3; answered.metrics?.utilizationPercent = 100
+        model.apply(answered)
+        try capture(NSHostingView(rootView: PanelView(model: model).frame(width: 320, height: 430)), size: NSSize(width: 320, height: 430), path: folder.appendingPathComponent("panel-response-answered.png"))
+        let syntheticGroup = SessionGroup(id: "demo-shared-task", name: "同一项目", members: ["remote:atlas", "local:demo-ab12"])
+        model.settings.sessionGroups = [syntheticGroup]
+        model.apply(groupedSnapshot(waiting: false))
+        try capture(NSHostingView(rootView: PanelView(model: model).frame(width: 320, height: 430)), size: NSSize(width: 320, height: 430), path: folder.appendingPathComponent("panel-response-group-busy.png"))
+        model.apply(groupedSnapshot(waiting: true))
+        try capture(NSHostingView(rootView: PanelView(model: model).frame(width: 320, height: 430)), size: NSSize(width: 320, height: 430), path: folder.appendingPathComponent("panel-response-group-waiting.png"))
+        let groupSettings = NSHostingView(rootView: VStack(alignment: .leading, spacing: 0) {
+            Text("监控设置 · 会话分组").font(.title3.bold()).foregroundColor(ThemePalette.ui(.text)).padding(18)
+            SettingsView(model: model, initialTab: 0) {}.monitoring
+        }.frame(width: 540, height: 1120).background(ThemePalette.ui(.surface)).preferredColorScheme(ThemePalette.scheme))
+        try capture(groupSettings, size: NSSize(width: 540, height: 1120), path: folder.appendingPathComponent("settings-monitor-groups.png"))
+        model.settings.sessionGroups = []
+        model.apply(snapshot(12))
+        let orbitSuite = "agent-orbit-demo-orbit-" + UUID().uuidString
+        if let orbitPreferences = UserDefaults(suiteName: orbitSuite) {
+            defer { orbitPreferences.removePersistentDomain(forName: orbitSuite) }
+            orbitPreferences.set(false, forKey: "orbitMiniMode")
+            let full = BubbleView(frame: NSRect(x: 0, y: 0, width: 176, height: 176), preferences: orbitPreferences)
+            full.update(model)
+            try capture(full, size: NSSize(width: 176, height: 176), path: folder.appendingPathComponent("orbit-global.png"), scale: CGFloat(model.settings.bubbleScale))
+            orbitPreferences.set(true, forKey: "orbitMiniMode")
+            let mini = BubbleView(frame: NSRect(x: 0, y: 0, width: 72, height: 72), preferences: orbitPreferences)
+            mini.update(model)
+            try capture(mini, size: NSSize(width: 72, height: 72), path: folder.appendingPathComponent("orbit-mini.png"), scale: CGFloat(model.settings.bubbleScale))
+        }
+        model.apply(offline)
+        try capture(NSHostingView(rootView: PanelView(model: model).frame(width: 300, height: 260)), size: NSSize(width: 300, height: 260), path: folder.appendingPathComponent("panel-response-offline.png"))
         prepare(model); model.apply(snapshot(3))
         try capture(NSHostingView(rootView: PanelView(model: model).frame(width: 320, height: 430)), size: NSSize(width: 320, height: 430), path: folder.appendingPathComponent("panel-running.png"))
         model.apply(snapshot(15))
@@ -148,8 +282,13 @@ enum DemoSupport {
         let bubble = BubbleView(frame: NSRect(x: 0, y: 0, width: 176, height: 176))
         for step in 0..<24 {
             model.apply(snapshot(step)); bubble.update(model)
-            try capture(bubble, size: NSSize(width: 176, height: 176), path: folder.appendingPathComponent(String(format: "orbit-%02d.png", step)))
+            try capture(bubble, size: NSSize(width: 176, height: 176), path: folder.appendingPathComponent(String(format: "orbit-%02d.png", step)), scale: CGFloat(model.settings.bubbleScale))
             Thread.sleep(forTimeInterval: 1.02)
+        }
+        for style in ["bars", "curve", "dots", "plasma", "aurora", "radar"] {
+            model.settings.waveStyle = style; model.settings.reduceMotion = false
+            bubble.update(model)
+            try capture(bubble, size: NSSize(width: 176, height: 176), path: folder.appendingPathComponent("orbit-wave-" + style + ".png"), scale: CGFloat(model.settings.bubbleScale))
         }
         print("Exported privacy-safe native demo frames")
     }

@@ -76,6 +76,8 @@ def main():
     frames=ROOT/'.media-build/frames';frames.mkdir(parents=True,exist_ok=True)
     images={name:Image.open(args.input/(name+'.png')).convert('RGBA') for name in ['panel-neon','panel-aurora','panel-graphite','panel-daylight','panel-error','panel-running']}
     orbits=[Image.open(args.input/('orbit-%02d.png'%i)).convert('RGBA') for i in range(24)]
+    mini_path=args.input/'orbit-mini.png'
+    mini=Image.open(mini_path).convert('RGBA') if mini_path.exists() else None
     base=backdrop();icon(output)
     hero=base.copy();d=ImageDraw.Draw(hero)
     text(d,(74,100),'AGENT ORBIT',22,CYAN)
@@ -98,6 +100,18 @@ def main():
         text(d,(x+8,26),title,19,CYAN)
         place(themes,images['panel-'+key],(x,70),286)
     themes.save(output/'themes.png')
+    styles = [('bars','声浪柱'), ('curve','连续曲线'), ('dots','节奏光点'),
+              ('plasma','等离子双波'), ('aurora','极光光带'), ('radar','雷达涟漪')]
+    if all((args.input / ('orbit-wave-' + key + '.png')).exists() for key, _ in styles):
+        waves = Image.new('RGB', (1280, 840), '#060b16'); wave_draw = ImageDraw.Draw(waves)
+        text(wave_draw, (32, 22), '真实输出活动 · 六种外围声浪', 27, CYAN, True)
+        for index, (key, title) in enumerate(styles):
+            x = 24 + index % 3 * 420; y = 82 + index // 3 * 370
+            text(wave_draw, (x + 12, y), title, 22, WHITE, True)
+            text(wave_draw, (x + 12, y + 32), key.upper(), 14, MUTED)
+            place(waves, Image.open(args.input / ('orbit-wave-' + key + '.png')), (x + 72, y + 66), 270)
+        text(wave_draw, (32, 810), 'DEMO DATA / Waveforms show output activity, not hardware or model performance.', 15, MUTED)
+        waves.save(output / 'wave-styles.png')
     gifs=[]
     for frame in range(FPS*SECONDS):
         t=frame/FPS; image=base.copy();draw=ImageDraw.Draw(image)
@@ -107,11 +121,11 @@ def main():
         if t<5:
             headline='让 CLI Agent\n都在视线之内';subtitle='Codex CLI · Claude Code CLI';detail='本机与远端 CLI 会话，常驻桌面监控';panel='panel-running'
         elif t<11:
-            headline='完成时，\n再回来';subtitle='运行 → 等待输入';detail='确认主任务结束后，以绿色状态提醒你';panel='panel-running' if t<8 else 'panel-neon'
+            headline='别让会话\n等太久';subtitle='分会话计时 · 久等提醒';detail='查看各自速度与等待时长，及时回到终端';panel='panel-running' if t<8 else 'panel-neon'
         elif t<17:
             headline='异常，\n及时看见';subtitle='红色状态 · 可选提示音';detail='服务错误、中断或会话退出，集中查看';panel='panel-error'
         elif t<23:
-            headline='收起之后，\n持续关注';subtitle='会话沿边缘排列 · 点击展开';detail='外圈与曲线显示输出活动，不代表 CPU';panel=None
+            headline='小一点，\n也看得见';subtitle='单击切大小 · 双击打开面板';detail='小号球保留待响应与最久等待，拖动移动';panel=None
         elif t<29:
             headline='换一种\n桌面风格';subtitle='四套皮肤 · 可调声浪';detail='样式、配色、高度与密度，自由调整';panel=['panel-neon','panel-aurora','panel-graphite','panel-daylight'][min(3,int((t-23)/1.5))]
         else:
@@ -123,7 +137,10 @@ def main():
             place(image,images[panel],(842,81),390)
             place(image,orbits[min(23,int(t))],(650,479),240)
         else:
-            place(image,orbits[min(23,int(t))],(748,195),450)
+            if mini is not None and t >= 20:
+                place(image,mini,(902,348),144)
+            else:
+                place(image,orbits[min(23,int(t))],(748,195),450)
         draw=ImageDraw.Draw(image)
         draw.rounded_rectangle((64,540,500,602),radius=15,fill='#0d2739',outline='#275774')
         text(draw,(85,561),'只读监控  /  会话环  /  完成提醒',21,CYAN,True)

@@ -28,10 +28,11 @@ struct NeonRule: View {
 
 struct NeonIconStyle: ButtonStyle {
     var active = false
+    var size: CGFloat = 24
     func makeBody(configuration: Configuration) -> some View {
         configuration.label.font(.system(size: 12, weight: .medium))
             .foregroundColor(active ? ThemePalette.ui(.accent) : ThemePalette.ui(.muted))
-            .frame(width: 24, height: 24)
+            .frame(width: size, height: size)
             .background(RoundedRectangle(cornerRadius: 7).fill(ThemePalette.ui(.accent).opacity(configuration.isPressed ? 0.2 : active ? 0.09 : 0.035)))
             .overlay(RoundedRectangle(cornerRadius: 7).stroke(ThemePalette.ui(.accent).opacity(active ? 0.35 : 0.12), lineWidth: 0.7))
             .contentShape(Rectangle())
@@ -75,7 +76,7 @@ struct UsageOverview: View {
     let metrics: UsageMetrics?
     let connected: Bool
     @State private var showDetails = false
-    @AppStorage("usageOverviewExpanded") private var expanded = true
+    @AppStorage("sessionUsageOverviewExpanded") private var expanded = false
     var body: some View {
         VStack(spacing: expanded ? 7 : 0) {
             HStack(spacing: 5) {
@@ -157,10 +158,14 @@ struct PaneCard: View {
     let open: () -> Void
     var showPreviews = true
     var showBackgroundCounts = true
+    var snooze: (() -> Void)? = nil
+    var snoozed = false
+    var reminderOpened = false
     var visualState: SessionVisualState { pane.visualState(connected: connected) }
     var color: Color { ThemePalette.ui(visualState.role) }
     var sessionColor: Color { Color(nsColor: ThemePalette.session(visualState)) }
     var isAvailable: Bool { visualState.role != .offline }
+    var hasFreshData: Bool { connected && pane.available != false }
     var heading: some View {
         HStack(spacing: 7) {
             Circle().fill(color).frame(width: 5, height: 5).shadow(color: color.opacity(0.7), radius: 4)
@@ -176,20 +181,98 @@ struct PaneCard: View {
                 .foregroundColor(color).lineLimit(1).minimumScaleFactor(0.85)
         }
     }
+    var response: SessionResponse? { isAvailable && !pane.isCritical ? pane.response : nil }
+    var effectiveResponse: SessionResponse? { hasFreshData && !pane.isCritical ? pane.effectiveResponse : nil }
+    var responseColor: Color { ThemePalette.ui(effectiveResponse?.overdue == true ? .attention : response?.kind == "running" ? .running : .waiting) }
+    var responseLabel: String {
+        guard let individual = response else { return "" }
+        let response = pane.responseGroup != nil && effectiveResponse?.isPending == true ? effectiveResponse! : individual
+        let age = SessionResponse.duration(response.elapsedSeconds)
+        if pane.responseGroup != nil && response.isPending {
+            return (response.observed ? "已观察组等待 " : "全组等待 ") + age
+        }
+        switch response.kind {
+        case "running": return "工作中 " + (response.observed ? "≥" : "") + age
+        case "waiting": return (response.observed ? "已观察等待 " : "等待输入 ") + age
+        case "attention": return (response.observed ? "已观察待处理 " : "待你操作 ") + age
+        default: return ""
+        }
+    }
+    var usageHelp: String {
+        guard let usage = pane.usageMetrics else { return "本会话的 CLI 用量暂不可用。" }
+        return "本会话主日志：累计 " + UsageMetrics.amount(usage.totalTokens) + " tok；输入 " + UsageMetrics.amount(usage.inputTokens) + "、输出 " + UsageMetrics.amount(usage.outputTokens) + "。实时消耗 " + usage.liveRate(usage.consumptionPerSecond, connected: hasFreshData) + " tok/s。上游输出为近 \(usage.windowSeconds ?? 30) 秒已记录 Token 均速，工具为近 \(usage.workWindowSeconds ?? 60) 秒结果次数；Claude 常在响应结束后结算，不等于持续生成速度。"
+    }
+    @ViewBuilder var responseLine: some View {
+        if let response = response, !responseLabel.isEmpty {
+            HStack(spacing: 5) {
+                Image(systemName: response.kind == "running" ? "clock" : "hourglass").font(.system(size: 8))
+                Text(responseLabel).monospacedDigit().lineLimit(1).minimumScaleFactor(0.85)
+                if response.isPending && effectiveResponse?.overdue == true {
+                    Text("待你继续").font(.system(size: 8, weight: .semibold)).foregroundColor(ThemePalette.ui(.attention))
+                }
+                if response.isPending, pane.responseGroup != nil, effectiveResponse?.kind == "running" {
+                    Text("组内工作中").font(.system(size: 8)).foregroundColor(ThemePalette.ui(.running))
+                }
+                Spacer(minLength: 0)
+                if response.isPending && effectiveResponse?.isPending == true, let snooze = snooze {
+                    Button(action: snooze) {
+                        Image(systemName: snoozed ? "bell.slash.fill" : reminderOpened ? "bell.badge" : "clock.badge.checkmark")
+                            .font(.system(size: 10)).foregroundColor(ThemePalette.ui(.muted))
+                    }.buttonStyle(.plain).accessibilityLabel(snoozed ? "已稍后提醒" : "稍后提醒这个会话")
+                        .help(snoozed ? "已暂缓一次提醒，等待时长继续累计。" : "稍后再提醒，不会将会话标为已回答。")
+                }
+            }.font(.system(size: 9)).foregroundColor(responseColor)
+                .help(response.observed ? "从本次连续观察到这个状态时开始计时；首次连接无法确认实际开始时间，因此显示观察到的下限。只有 CLI 恢复工作才结束等待。" : "从确认本轮完成并等待输入时开始计时。打开或暂缓提醒不会假定你已经回答。")
+        }
+    }
+    var efficiencyLine: some View {
+        HStack(spacing: 5) {
+            Text("↑ " + (pane.usageMetrics?.liveRate(pane.usageMetrics?.upstreamTokensPerSecond, connected: hasFreshData) ?? "—") + " tok/s")
+                .foregroundColor(ThemePalette.ui(hasFreshData ? .accent : .muted))
+            Text("·").foregroundColor(ThemePalette.ui(.muted))
+            Text("工具 " + (pane.usageMetrics?.liveRate(pane.usageMetrics?.toolsPerMinute, connected: hasFreshData) ?? "—") + "/min")
+                .foregroundColor(ThemePalette.ui(hasFreshData ? .secondaryAccent : .muted))
+            Spacer(minLength: 0)
+            Button(action: open) { Image(systemName: "arrow.up.right") }
+                .buttonStyle(NeonIconStyle(size: 20)).accessibilityLabel(pane.source == "local" ? "打开 Codex 应用" : "进入远端会话")
+                .help(pane.source == "local" ? "打开 Codex 应用查看本机会话" : "进入这个远端会话").disabled(!isAvailable || pane.state == "missing")
+        }.font(.system(size: 9, design: .monospaced)).lineLimit(1).minimumScaleFactor(0.85).help(usageHelp)
+    }
+    var observationSummary: String? {
+        guard let response = effectiveResponse, response.idleSeconds != nil || response.runSeconds != nil else {
+            return pane.responseGroup.map { $0.name + ($0.kind == "running" ? " · 组内工作中" : " · 共享响应") }
+        }
+        let name = pane.responseGroup.map { $0.name + " · " } ?? ""
+        let idle = SessionResponse.duration(response.idleSeconds)
+        let run = SessionResponse.duration(response.runSeconds)
+        let efficiency: String
+        if let value = response.efficiencyPercent, value.isFinite {
+            efficiency = String(format: "%.0f%%", max(0, min(100, value)))
+        } else { efficiency = "—" }
+        return name + "闲" + idle + "/跑" + run + " · 运行占比" + efficiency
+    }
+    var observationHelp: String {
+        var parts: [String] = []
+        if let group = pane.responseGroup {
+            parts.append("共享组「" + group.name + "」：任一成员运行时全组不催促；全部成员明确等待后才开始共同等待计时。")
+        }
+        parts.append("闲/跑与运行占比仅表示本次监控已观察时间，断线不补计。运行占比＝跑/(闲+跑)，不表示任务质量或模型效率。")
+        parts.append("闲/跑比例 " + UsageMetrics.rate(effectiveResponse?.idleRunRatio))
+        if pane.responseGroup?.parallelConflict == true { parts.append("有多个组员同时运行，请核对共享上下文是否符合你的安排。") }
+        return parts.joined(separator: "\n")
+    }
+    @ViewBuilder var observationLine: some View {
+        if let summary = observationSummary {
+            Text(summary).font(.system(size: 8)).foregroundColor(ThemePalette.ui(.muted))
+                .lineLimit(1).minimumScaleFactor(0.8).help(observationHelp)
+        }
+    }
     @ViewBuilder var details: some View {
         if showBackgroundCounts, let counts = pane.backgroundCountsText {
             Text((isAvailable ? "" : "上次：") + counts)
-                .font(.system(size: 9, design: .monospaced)).foregroundColor(ThemePalette.ui(.muted))
+                .font(.system(size: 8.5, design: .monospaced)).foregroundColor(ThemePalette.ui(.muted))
                 .lineLimit(1).minimumScaleFactor(0.8)
-                .help("子智能体统计正在工作的任务；有分母时表示在线总数。保留终端可能仍存活或等待输入，数量不会把已结束的主对话判为运行中。数量待核实时不显示为 0。")
-        }
-        if alert, let completed = pane.completedAt, visualState.role == .waiting {
-            HStack(spacing: 5) {
-                Image(systemName: "checkmark.circle.fill")
-                Text("刚完成")
-                Text(Date(timeIntervalSince1970: completed), style: .time)
-                Spacer()
-            }.font(.system(size: 10, weight: .medium)).foregroundColor(ThemePalette.ui(.waiting))
+                .help("子智能体统计正在工作的任务；保留终端可能仍存活或等待输入，数量不会把已结束的主对话判为运行中。数量待核实时不显示为 0。")
         }
         if let error = pane.errorSummary, !error.isEmpty {
             HStack(alignment: .top, spacing: 5) {
@@ -197,24 +280,20 @@ struct PaneCard: View {
                 Text(error).lineLimit(3).textSelection(.enabled)
             }.font(.system(size: 11, weight: .medium)).foregroundColor(color)
         }
-        if showPreviews, visualState.role == .running, !pane.workingIsBackgroundCount, let working = pane.working, !working.isEmpty {
-            Text(working).font(.system(size: 9, design: .monospaced)).foregroundColor(ThemePalette.ui(.muted).opacity(0.85)).lineLimit(1)
+        if showPreviews, visualState.role == .running, !pane.workingIsBackgroundCount {
+            let text = pane.working?.isEmpty == false ? pane.working! : pane.preview.suffix(1).joined()
+            if !text.isEmpty { Text(text).font(.system(size: 9)).foregroundColor(ThemePalette.ui(.muted)).lineLimit(1) }
         }
     }
     var body: some View {
-        VStack(alignment: .leading, spacing: 6) {
+        VStack(alignment: .leading, spacing: 4) {
             heading
+            responseLine
+            efficiencyLine
+            observationLine
             details
-            HStack(alignment: .bottom, spacing: 8) {
-                if showPreviews { Text(pane.preview.suffix(2).joined(separator: "\n"))
-                    .font(.system(size: 10.5)).foregroundColor(ThemePalette.ui(.muted)).lineSpacing(2).lineLimit(2)
-                    .frame(maxWidth: .infinity, alignment: .leading) } else { Spacer(minLength: 0) }
-                Button(action: open) { Image(systemName: "arrow.up.right") }
-                    .buttonStyle(NeonIconStyle()).accessibilityLabel(pane.source == "local" ? "打开 Codex 应用" : "进入远端会话")
-                    .help(pane.source == "local" ? "打开 Codex 应用查看本机会话" : "进入这个远端会话").disabled(!isAvailable || pane.state == "missing")
-            }
         }
-        .padding(.vertical, 9).padding(.leading, 12).padding(.trailing, 8)
+        .padding(.vertical, 8).padding(.leading, 12).padding(.trailing, 8)
         .background(RoundedRectangle(cornerRadius: 11).fill(LinearGradient(colors: [ThemePalette.ui(.surface).opacity(0.96), ThemePalette.ui(.base).opacity(0.94)], startPoint: .topLeading, endPoint: .bottomTrailing)))
         .overlay(RoundedRectangle(cornerRadius: 11).stroke(color.opacity(alert || [.attention, .error, .unknown].contains(visualState.role) ? 0.55 : 0.2), lineWidth: 0.8))
         .overlay(alignment: .leading) {
@@ -392,8 +471,15 @@ struct PanelView: View {
             HStack(spacing: 5) {
                 Circle().fill(connectionColor).frame(width: 4, height: 4)
                     .shadow(color: connectionColor.opacity(0.7), radius: 4)
-                Text(model.message).font(.system(size: 9)).lineLimit(1).help(model.message)
-                Spacer()
+                Text(model.pendingPanes.isEmpty ? model.message : model.pendingSummary)
+                    .font(.system(size: 9, weight: model.pendingPanes.isEmpty ? .regular : .medium)).lineLimit(1)
+                    .foregroundColor(model.pendingPanes.contains { $0.effectiveResponse?.overdue == true } ? ThemePalette.ui(.attention) : ThemePalette.ui(.muted))
+                    .help(model.message + "\n" + model.pendingSummary)
+                Spacer(minLength: 0)
+                if let priority = model.priorityPane, !model.pendingPanes.isEmpty {
+                    Button("优先处理") { model.open(priority) }.buttonStyle(.plain)
+                        .font(.system(size: 8, weight: .medium)).foregroundColor(ThemePalette.ui(.accent))
+                }
                 Text(model.connectionState == "partial" ? "PARTIAL" : model.connected ? "LIVE" : model.connectionState == "config_error" ? "SETTINGS" : model.connectionNeedsAttention ? "ERROR" : model.connectionState == "delayed" ? "WAITING" : "CONNECTING").font(.system(size: 8, weight: .semibold, design: .monospaced)).tracking(1.3)
             }.foregroundColor(ThemePalette.ui(.muted))
         }.padding(.horizontal, 11).padding(.bottom, 8)
@@ -411,6 +497,7 @@ struct PanelView: View {
         }
     }
     var body: some View {
+        GeometryReader { geometry in
         VStack(spacing: 0) {
             header
             summary
@@ -431,8 +518,10 @@ struct PanelView: View {
                             }
                         }.frame(maxWidth: .infinity).padding(.vertical, 55)
                     }
-                    ForEach(model.rows) { pane in
-                        PaneCard(pane: pane, alert: model.unread.contains { $0.paneId == pane.paneId }, connected: model.isConnected(pane), open: { model.open(pane) }, showPreviews: model.settings.showPreviews, showBackgroundCounts: model.settings.showBackgroundCounts)
+                    ForEach(model.displayRows) { pane in
+                        PaneCard(pane: pane, alert: model.unread.contains { $0.paneId == pane.paneId }, connected: model.isConnected(pane), open: { model.open(pane) }, showPreviews: model.settings.showPreviews && geometry.size.height >= 330, showBackgroundCounts: model.settings.showBackgroundCounts && geometry.size.height >= 330,
+                                 snooze: model.settings.waitReminderEnabled ? { model.snooze(pane) } : nil,
+                                 snoozed: model.reminderIsSnoozed(pane), reminderOpened: model.reminderWasOpened(pane))
                     }
                 }.padding(9)
             }
@@ -443,6 +532,7 @@ struct PanelView: View {
                 Spacer()
                 Text("\(model.rows.count) 个会话").monospacedDigit()
             }.font(.system(size: 9)).foregroundColor(ThemePalette.ui(.muted)).padding(.horizontal, 12).padding(.vertical, 7)
+        }
         }
         .frame(minWidth: 300, minHeight: 240)
         .background(NeonBackground())

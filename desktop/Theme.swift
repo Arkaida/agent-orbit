@@ -83,7 +83,7 @@ struct SkinDefinition {
             .running: 0x3DD9FF, .waiting: 0x57FFB2,
             .attention: 0xF4CD73, .error: 0xFF708C,
             .unknown: 0xBD9AEF, .offline: 0x7F8EA5
-        ], defaultWaveStyle: "bars"),
+        ], defaultWaveStyle: "plasma"),
         SkinDefinition(id: "aurora", title: "极光紫", light: false, tokens: [
             .base: 0x100B20, .surface: 0x20132F,
             .accent: 0xBD9CFF, .secondaryAccent: 0xF38AC5,
@@ -91,7 +91,7 @@ struct SkinDefinition {
             .running: 0xBD9CFF, .waiting: 0x83E7BE,
             .attention: 0xF7CF79, .error: 0xFF8FAE,
             .unknown: 0xCFAC91, .offline: 0xA29AAF
-        ], defaultWaveStyle: "curve", defaultWaveLineWidth: 1.4),
+        ], defaultWaveStyle: "aurora", defaultWaveLineWidth: 1.2),
         SkinDefinition(id: "graphite", title: "石墨黑", light: false, tokens: [
             .base: 0x101215, .surface: 0x1C2025,
             .accent: 0x88C5D6, .secondaryAccent: 0xC0A9DA,
@@ -99,7 +99,7 @@ struct SkinDefinition {
             .running: 0x88C5D6, .waiting: 0x9CD4B2,
             .attention: 0xE2CB8B, .error: 0xE58D9C,
             .unknown: 0xB9A1CA, .offline: 0x8C96A3
-        ], defaultWaveStyle: "bars", defaultWaveLineWidth: 0.9),
+        ], defaultWaveStyle: "radar", defaultWaveLineWidth: 0.9),
         SkinDefinition(id: "daylight", title: "晴空浅色", light: true, tokens: [
             .base: 0xEDF2FA, .surface: 0xFFFFFF,
             .accent: 0x136FBA, .secondaryAccent: 0x7856C7,
@@ -107,7 +107,7 @@ struct SkinDefinition {
             .running: 0x136FBA, .waiting: 0x087A4F,
             .attention: 0x8A6600, .error: 0xC52B45,
             .unknown: 0x79559A, .offline: 0x59697D
-        ], defaultWaveStyle: "dots")
+        ], defaultWaveStyle: "curve", defaultWaveLineWidth: 1.2)
     ]
 }
 
@@ -185,12 +185,18 @@ struct PaletteResolver {
     func session(_ state: SessionVisualState) -> UInt32 { token(state.role) }
 
     func waveStyle(_ requested: String) -> String {
-        ["bars", "curve", "dots", "off"].contains(requested) ? requested : skin.defaultWaveStyle
+        ["bars", "curve", "dots", "off", "plasma", "aurora", "radar"].contains(requested) ? requested : skin.defaultWaveStyle
     }
 
     func waveLineWidth(_ requested: String) -> CGFloat {
         if requested == "theme" { return skin.defaultWaveLineWidth }
-        return waveStyle(requested) == "curve" ? 1.4 : 1.5
+        switch waveStyle(requested) {
+        case "curve": return 1.4
+        case "plasma": return 1.2
+        case "aurora": return 1.1
+        case "radar": return 1
+        default: return 1.5
+        }
     }
 
     func waveColor(state: SessionVisualState, palette: String, fraction: CGFloat) -> UInt32 {

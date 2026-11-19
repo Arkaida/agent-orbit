@@ -5,6 +5,7 @@ from pathlib import Path
 import platform
 import plistlib
 import re
+import shutil
 import subprocess
 import zipfile
 
@@ -31,7 +32,7 @@ files = [ROOT / name for name in ('agent-orbit', 'codex-remote', 'shortcuts.zsh'
                                  'README.md', 'LICENSE', 'THIRD_PARTY_NOTICES.md', 'CONTRIBUTING.md', 'OPEN_SOURCE_RESEARCH.md',
                                  '.gitignore', 'settings.example.json')]
 files += [ROOT / name for name in ('agent_orbit_cli.py', 'configuration.py', 'local_probe.py', 'remote_probe.py', 'monitor.py',
-                                 'desktop_bridge.py', 'desktop_launch.py', 'completion_tracker.py',
+                                 'desktop_bridge.py', 'desktop_launch.py', 'completion_tracker.py', 'response_tracker.py',
                                  'activity_tracker.py', 'usage_tracker.py', 'error_tracker.py')]
 files += sorted(ROOT.glob('test_*.py'))
 for folder in ('desktop', 'docs', 'scripts', '.github'):
@@ -43,7 +44,10 @@ with zipfile.ZipFile(source_zip, 'w', zipfile.ZIP_DEFLATED) as archive:
 app_zip = OUTPUT / ('Agent-Orbit-' + VERSION + '-macos-' + platform.machine() + '.zip')
 if app_zip.exists(): app_zip.unlink()
 subprocess.run(['/usr/bin/ditto', '-c', '-k', '--norsrc', '--noextattr', '--noacl', '--keepParent', str(APP), str(app_zip)], check=True)
-checksums = '\n'.join(hashlib.sha256(path.read_bytes()).hexdigest() + '  ' + path.name for path in (source_zip, app_zip)) + '\n'
+video = OUTPUT / 'agent-orbit-demo.mp4'
+shutil.copy2(ROOT / 'docs/media/agent-orbit-demo.mp4', video)
+checksums = '\n'.join(hashlib.sha256(path.read_bytes()).hexdigest() + '  ' + path.name for path in (source_zip, app_zip, video)) + '\n'
 (OUTPUT / 'SHA256SUMS').write_text(checksums)
 print(source_zip)
 print(app_zip)
+print(video)

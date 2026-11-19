@@ -12,16 +12,20 @@
   "orbit_label_color": "theme",
   "wave_style": "theme",
   "wave_palette": "theme",
-  "wave_height": 1.0,
+  "wave_height": 1.3,
   "wave_density": 1.0,
   "pinned": true,
   "sound": true,
   "completion_sound": true,
   "error_sound": true,
+  "wait_reminder_enabled": true,
+  "wait_reminder_minutes": 5,
+  "wait_reminder_sound": true,
   "show_previews": true,
   "show_background_counts": true,
-  "bubble_scale": 1.0,
+  "bubble_scale": 0.85,
   "opacity": 1.0,
   "reduce_motion": false,
-  "launch_compact": false
+  "launch_compact": false,
+  "session_groups": []
 }

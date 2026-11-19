@@ -1,6 +1,56 @@
 import AppKit
 import SwiftUI
 
+struct SessionResponse: Decodable {
+    var kind: String
+    var episodeId: String?
+    var since: Double?
+    var elapsedSeconds: Double?
+    var observed: Bool
+    var overdue: Bool
+    var scope: String?
+    var idleSeconds: Double?
+    var runSeconds: Double?
+    var idleRunRatio: Double?
+    var efficiencyPercent: Double?
+    var reminderSuppressed: Bool?
+    var isPending: Bool { kind == "waiting" || kind == "attention" }
+    static func duration(_ elapsed: Double?) -> String {
+        guard let elapsed = elapsed, elapsed.isFinite, elapsed >= 0 else { return "—" }
+        let seconds = Int(min(elapsed, Double(Int.max / 2)))
+        if seconds >= 3600 { return "\(seconds / 3600)时\(seconds % 3600 / 60)分" }
+        return seconds >= 60 ? "\(seconds / 60)分\(seconds % 60)秒" : "\(seconds)秒"
+    }
+}
+
+struct SessionResponseGroup: Decodable {
+    var id: String
+    var name: String
+    var members: [String]?
+    var count: Int?
+    var knownMembers: Int?
+    var runningMembers: Int?
+    var parallelConflict: Bool?
+    var kind: String
+    var episodeId: String?
+    var since: Double?
+    var elapsedSeconds: Double?
+    var observed: Bool
+    var overdue: Bool
+    var scope: String?
+    var idleSeconds: Double?
+    var runSeconds: Double?
+    var idleRunRatio: Double?
+    var efficiencyPercent: Double?
+    var reminderSuppressed: Bool?
+    var response: SessionResponse {
+        SessionResponse(kind: kind, episodeId: episodeId, since: since, elapsedSeconds: elapsedSeconds,
+                        observed: observed, overdue: overdue, scope: scope, idleSeconds: idleSeconds,
+                        runSeconds: runSeconds, idleRunRatio: idleRunRatio, efficiencyPercent: efficiencyPercent,
+                        reminderSuppressed: reminderSuppressed)
+    }
+}
+
 struct Pane: Decodable, Identifiable {
     var paneId: String
     var session: String
@@ -26,6 +76,16 @@ struct Pane: Decodable, Identifiable {
     var available: Bool?
     var groupId: String?
     var threadId: String?
+    var response: SessionResponse?
+    var responseGroup: SessionResponseGroup?
+    var usageMetrics: UsageMetrics?
+    var effectiveResponse: SessionResponse? { responseGroup?.response ?? response }
+    var responseMonitorKey: String { responseGroup.map { "group:" + $0.id } ?? (source ?? "remote") + ":" + monitorKey }
+    var responseEpisodeKey: String? {
+        guard let episode = effectiveResponse?.episodeId else { return nil }
+        if let group = responseGroup { return "group:" + group.id + ":" + episode }
+        return (source ?? "remote") + ":" + episode
+    }
     var monitorKey: String { groupId ?? session }
     var orbitName: String { source == "local" ? "本·" + String(session.prefix(12)) + "·" + String((threadId ?? paneId).suffix(4)) : session }
     var backgroundCount: Int?
@@ -171,11 +231,66 @@ func argument(_ name: String, fallback: String) -> String {
     return CommandLine.arguments[i + 1]
 }
 
+/// Notification state stays local; it never marks a CLI question as answered.
+struct WaitReminderTracker {
+    struct Candidate {
+        var key: String
+        var elapsed: Double
+    }
+    private struct Episode {
+        var notified = false
+        var opened = false
+        var snoozeUntil: Double?
+    }
+    private var episodes: [String: Episode] = [:]
+
+    mutating func update(_ candidates: [Candidate], enabled: Bool, soundAllowed: Bool,
+                         minutes: Double, now: Double, deliveryBlocked: Bool = false) -> [String] {
+        let threshold = max(60, min(7200, minutes.isFinite ? minutes * 60 : 300))
+        // Changing preferences never replays an already delivered reminder.
+        // Untouched episodes naturally become eligible when sound is enabled
+        // or the threshold is lowered; only an explicit snooze re-arms a sound.
+        let active = Set(candidates.map(\.key))
+        episodes = episodes.filter { active.contains($0.key) }
+        guard enabled else { return [] }
+        var due: [String] = []
+        for candidate in candidates where candidate.elapsed.isFinite && candidate.elapsed >= threshold {
+            var episode = episodes[candidate.key] ?? Episode()
+            if let until = episode.snoozeUntil {
+                guard now >= until else { episodes[candidate.key] = episode; continue }
+                episode.snoozeUntil = nil; episode.notified = false
+            }
+            guard !episode.opened, !episode.notified else { episodes[candidate.key] = episode; continue }
+            if soundAllowed && !deliveryBlocked {
+                episode.notified = true; due.append(candidate.key)
+            }
+            episodes[candidate.key] = episode
+        }
+        return due
+    }
+    mutating func snooze(_ key: String, now: Double, minutes: Double) {
+        var episode = episodes[key] ?? Episode()
+        episode.opened = false; episode.notified = false
+        episode.snoozeUntil = now + max(60, min(7200, minutes.isFinite ? minutes * 60 : 300))
+        episodes[key] = episode
+    }
+    mutating func opened(_ key: String) {
+        var episode = episodes[key] ?? Episode()
+        episode.opened = true; episode.notified = true; episode.snoozeUntil = nil
+        episodes[key] = episode
+    }
+    func isSnoozed(_ key: String, now: Double) -> Bool {
+        (episodes[key]?.snoozeUntil ?? 0) > now
+    }
+    func wasOpened(_ key: String) -> Bool { episodes[key]?.opened == true }
+}
+
 final class PanelModel: ObservableObject {
     @Published var settings: AppSettings
     @Published var connections: [SourceConnection] = []
     @Published var localSessions: [LocalSession] = []
     @Published var metrics: UsageMetrics?
+    @Published private(set) var reminderRevision = 0
     @Published var rows: [Pane] = []
     @Published var followed: [String] = []
     @Published var connectionState = "connecting"
@@ -215,6 +330,8 @@ final class PanelModel: ObservableObject {
     private var seen = Set<String>()
     private var seenErrors = Set<String>()
     private var dismissedErrors = Set<String>()
+    private var waitReminders = WaitReminderTracker()
+    private var lastPrioritySoundAt = -Double.infinity
     private var timer: Timer?
     private var lastPacket = Date()
     private var stopped = false
@@ -238,6 +355,61 @@ final class PanelModel: ObservableObject {
         unread.filter { event in
             rows.contains { $0.paneId == event.paneId && $0.visualState(connected: isConnected($0)) == .waiting && $0.completionId == event.id }
         }
+    }
+
+    var pendingPanes: [Pane] {
+        var seen = Set<String>()
+        return rows.filter { pane in
+            isConnected(pane) && pane.available != false && !pane.isCritical &&
+            pane.effectiveResponse?.isPending == true && pane.effectiveResponse?.reminderSuppressed != true && seen.insert(pane.responseMonitorKey).inserted
+        }.sorted { ($0.effectiveResponse?.elapsedSeconds ?? -1) > ($1.effectiveResponse?.elapsedSeconds ?? -1) }
+    }
+    var longestPending: Double? { pendingPanes.compactMap { $0.effectiveResponse?.elapsedSeconds }.max() }
+    var pendingSummary: String {
+        let pending = pendingPanes
+        guard !pending.isEmpty else { return "" }
+        let oldest = pending.first?.effectiveResponse
+        let age = SessionResponse.duration(oldest?.elapsedSeconds)
+        return "待响应 \(pending.count) · 最久" + (oldest?.observed == true ? "≥" : "") + age
+    }
+    var priorityPane: Pane? {
+        rows.first { isConnected($0) && $0.isCritical } ?? pendingPanes.first
+    }
+    var displayRows: [Pane] {
+        func priority(_ pane: Pane) -> Int {
+            guard isConnected(pane), pane.available != false else { return 6 }
+            if pane.isCritical { return 0 }
+            if pane.effectiveResponse?.isPending == true {
+                if pane.effectiveResponse?.overdue == true { return 1 }
+                return pane.effectiveResponse?.kind == "attention" ? 2 : 3
+            }
+            return pane.state == "running" ? 4 : 5
+        }
+        return rows.enumerated().sorted { left, right in
+            let a = priority(left.element), b = priority(right.element)
+            if a != b { return a < b }
+            if (1...3).contains(a) {
+                let elapsedA = left.element.effectiveResponse?.elapsedSeconds ?? -1
+                let elapsedB = right.element.effectiveResponse?.elapsedSeconds ?? -1
+                if elapsedA != elapsedB { return elapsedA > elapsedB }
+            }
+            return left.offset < right.offset
+        }.map(\.element)
+    }
+    func reminderIsSnoozed(_ pane: Pane) -> Bool {
+        guard let key = pane.responseEpisodeKey else { return false }
+        return waitReminders.isSnoozed(key, now: ProcessInfo.processInfo.systemUptime)
+    }
+    func reminderWasOpened(_ pane: Pane) -> Bool {
+        guard let key = pane.responseEpisodeKey else { return false }
+        return waitReminders.wasOpened(key)
+    }
+    func snooze(_ pane: Pane) {
+        guard isConnected(pane), pane.available != false, !pane.isCritical,
+              pane.effectiveResponse?.isPending == true, pane.effectiveResponse?.reminderSuppressed != true,
+              let key = pane.responseEpisodeKey else { return }
+        waitReminders.snooze(key, now: ProcessInfo.processInfo.systemUptime, minutes: settings.waitReminderMinutes)
+        reminderRevision += 1; onUpdate?()
     }
 
     func isResolved(_ event: ErrorEvent) -> Bool {
@@ -369,7 +541,10 @@ final class PanelModel: ObservableObject {
                     if !self.localOutageAlerted {
                         self.localOutageAlerted = true
                         self.unreadErrors.insert(ErrorEvent(id: UUID().uuidString, paneId: "__local__", session: "本地监控", summary: "监控程序无响应，远端状态暂不可确认", occurredAt: Date().timeIntervalSince1970, kind: "monitor", severity: "error"), at: 0)
-                        if self.sound && self.settings.errorSound { NSSound(named: NSSound.Name("Basso"))?.play() }
+                        if self.sound && self.settings.errorSound {
+                            self.lastPrioritySoundAt = ProcessInfo.processInfo.systemUptime
+                            NSSound(named: NSSound.Name("Basso"))?.play()
+                        }
                     }
                     if Date().timeIntervalSince(self.lastPacket) > 20 && self.process?.isRunning == true {
                         self.process?.terminate()
@@ -434,15 +609,31 @@ final class PanelModel: ObservableObject {
             unreadErrors = Array(latest.values.sorted(by: { $0.occurredAt > $1.occurredAt }).prefix(20))
         }
         unreadErrors.removeAll { isResolved($0) }
-        // One sound per update; interruptions take priority over completions.
-        if sound && ((!freshErrors.isEmpty && settings.errorSound) || (!fresh.isEmpty && settings.completionSound)) {
+        // Deliver at most one sound per update. Critical events and fresh
+        // completions are heard before a waiting reminder; postponed reminders
+        // remain eligible on the next fresh frame.
+        let eventSound = sound && ((!freshErrors.isEmpty && settings.errorSound) || (!fresh.isEmpty && settings.completionSound))
+        let candidates = pendingPanes.compactMap { pane -> WaitReminderTracker.Candidate? in
+            guard let key = pane.responseEpisodeKey, let elapsed = pane.effectiveResponse?.elapsedSeconds else { return nil }
+            return WaitReminderTracker.Candidate(key: key, elapsed: elapsed)
+        }
+        let reminderNow = ProcessInfo.processInfo.systemUptime
+        if eventSound { lastPrioritySoundAt = reminderNow }
+        let due = waitReminders.update(candidates, enabled: settings.waitReminderEnabled,
+                                       soundAllowed: sound && settings.waitReminderSound,
+                                       minutes: settings.waitReminderMinutes,
+                                       now: reminderNow, deliveryBlocked: reminderNow - lastPrioritySoundAt < 3)
+        if eventSound {
             let critical = settings.errorSound && freshErrors.contains(where: \.isCritical)
             NSSound(named: NSSound.Name(critical ? "Basso" : "Glass"))?.play()
-        }
+        } else if !due.isEmpty { NSSound(named: NSSound.Name("Glass"))?.play() }
         onUpdate?()
     }
 
     func acknowledge(_ pane: Pane) {
+        if let key = pane.responseEpisodeKey, pane.effectiveResponse?.isPending == true {
+            waitReminders.opened(key); reminderRevision += 1
+        }
         dismissedErrors.formUnion(unreadErrors.filter { $0.paneId == pane.paneId }.map(\.id))
         unread.removeAll { $0.paneId == pane.paneId }
         unreadErrors.removeAll { $0.paneId == pane.paneId }

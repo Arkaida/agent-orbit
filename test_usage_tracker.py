@@ -1,4 +1,5 @@
 import json
+import copy
 import unittest
 
 from desktop_bridge import FeedState, source_payload
@@ -246,6 +247,71 @@ class UsageTrackerTests(unittest.TestCase):
         generation = feed.generation
         feed.accept(dict(panes=[row(usage(total=1030))]), [], 1, 3, 3, max_gap_seconds=9)
         self.assertEqual(feed.generation, generation)
+
+    def test_per_pane_metrics_do_not_include_other_root_usage(self):
+        first = [row(usage()), row(usage(identity='codex:beta:2', total=2000), session='beta', pane='%2')]
+        self.observe(first, 0)
+        second = [row(usage(total=1030, output=206, tools=3)),
+                  row(usage(identity='codex:beta:2', total=2300, output=260, tools=12), session='beta', pane='%2')]
+        global_metrics = self.observe(second, 1)
+        before = copy.deepcopy(self.tracker.records)
+        alpha = self.tracker.pane_metrics(second[0], 1, self.connections)
+        beta = self.tracker.pane_metrics(second[1], 1, self.connections)
+        self.assertEqual(alpha['scope'], 'root_session')
+        self.assertEqual((alpha['total_tokens'], beta['total_tokens']), (1030, 2300))
+        self.assertEqual((alpha['consumption_per_second'], beta['consumption_per_second']), (1, 10))
+        self.assertEqual((alpha['upstream_tokens_per_second'], beta['upstream_tokens_per_second']), (.2, 2))
+        self.assertEqual((alpha['tools_per_minute'], beta['tools_per_minute']), (1, 10))
+        self.assertEqual(global_metrics['consumption_per_second'], 11)
+        self.assertEqual(self.tracker.records, before)
+
+    def test_per_pane_baseline_missing_and_offline_rates_remain_null(self):
+        rows = [row(usage())]
+        self.observe(rows, 0)
+        for tenth in range(10):
+            metrics = self.tracker.pane_metrics(rows[0], tenth / 10, self.connections)
+            self.assertIsNone(metrics['consumption_per_second'])
+            self.assertEqual(metrics['total_tokens'], 1000)
+        rows = [row(usage(total=1030))]
+        self.observe(rows, 1)
+        offline = self.tracker.pane_metrics(dict(rows[0], available=False), 1, self.connections)
+        self.assertEqual(offline['total_tokens'], 1030)
+        self.assertEqual(offline['usage_covered'], 1)
+        self.assertEqual(offline['live_usage_covered'], 0)
+        self.assertIsNone(offline['consumption_per_second'])
+        stale = self.tracker.pane_metrics(rows[0], 4, self.connections)
+        self.assertIsNone(stale['consumption_per_second'])
+        missing = self.tracker.pane_metrics(row(), 1, self.connections)
+        self.assertIsNone(missing['total_tokens'])
+        self.assertIsNone(missing['tools_per_minute'])
+        self.assertEqual(missing['usage_covered'], 0)
+        json.dumps(missing, allow_nan=False)
+
+    def test_per_pane_duplicate_roots_and_source_namespaces(self):
+        remote = [row(usage()), row(usage(), pane='%2')]
+        local = [row(usage(total=5000), source='local')]
+        self.tracker.observe('remote', remote, 0)
+        self.tracker.observe('local', local, 0)
+        remote = [row(usage(total=1030)), row(usage(total=1030), pane='%2')]
+        local = [row(usage(total=5300), source='local')]
+        self.tracker.observe('remote', remote, 1)
+        self.tracker.observe('local', local, 1)
+        health = self.connections + [dict(id='local', connected=True)]
+        self.assertEqual(self.tracker.pane_metrics(remote[0], 1, health),
+                         self.tracker.pane_metrics(remote[1], 1, health))
+        self.assertEqual(self.tracker.pane_metrics(local[0], 1, health)['consumption_per_second'], 10)
+        self.assertEqual(self.tracker.pane_metrics(remote[0], 1, health)['consumption_per_second'], 1)
+
+    def test_per_pane_tools_can_be_complete_without_token_coverage(self):
+        first = [row(usage(usage_complete=False))]
+        self.observe(first, 0)
+        second = [row(usage(usage_complete=False, tool_completions=3))]
+        self.observe(second, 1)
+        metrics = self.tracker.pane_metrics(second[0], 1, self.connections)
+        self.assertIsNone(metrics['total_tokens'])
+        self.assertIsNone(metrics['consumption_per_second'])
+        self.assertEqual(metrics['tools_per_minute'], 1)
+        self.assertEqual(metrics['tools_covered'], 1)
 
 
 if __name__ == '__main__':

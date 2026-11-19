@@ -152,7 +152,7 @@ private final class ThemeTestSuite {
                 }
                 check(palette.waveStyle("theme") == skin.defaultWaveStyle, "Default wave style must come from the skin")
                 check(palette.waveLineWidth("theme") == skin.defaultWaveLineWidth, "Default wave width must come from the skin")
-                for explicit in ["bars", "curve", "dots", "off"] {
+                for explicit in ["bars", "curve", "dots", "plasma", "aurora", "radar", "off"] {
                     check(palette.waveStyle(explicit) == explicit, "Explicit wave style \(explicit) must be respected")
                 }
                 check(palette.waveColor(state: .running, palette: "ice", fraction: -1) == palette.waveColor(state: .running, palette: "ice", fraction: 0), "Gradient input must clamp at the start")
@@ -170,12 +170,54 @@ private final class ThemeTestSuite {
             do {
                 let loaded = try decoder.decode(AppSettings.self, from: Data(json.utf8))
                 check(loaded.orbitLabelColor == "theme", "Legacy/default settings must retain their compatible theme value")
+                check(loaded.waitReminderEnabled && loaded.waitReminderSound && loaded.waitReminderMinutes == 5,
+                      "Old settings must gain a five-minute wait reminder without discarding existing preferences")
+                check(loaded.sessionGroups.isEmpty, "Old settings must not automatically group sessions")
                 let restored = try decoder.decode(AppSettings.self, from: loaded.encoded())
                 check(restored.theme == loaded.theme && restored.orbitLabelColor == loaded.orbitLabelColor, "Saving and reopening old settings must preserve the selected mode")
                 let palette = PaletteResolver(theme: restored.theme, statusStyle: restored.orbitLabelColor)
                 check(Set(states.map(palette.session)).count == states.count, "Old theme settings must produce six semantic colors, not one accent")
             } catch { failures.append("Legacy settings could not round-trip: \(error)") }
         }
+        do {
+            var settings = AppSettings()
+            settings.waitReminderEnabled = false; settings.waitReminderSound = false; settings.waitReminderMinutes = 12
+            try settings.validate()
+            let restored = try decoder.decode(AppSettings.self, from: settings.encoded())
+            check(!restored.waitReminderEnabled && !restored.waitReminderSound && restored.waitReminderMinutes == 12,
+                  "Reminder thresholds and independent sound settings must survive reopening")
+            for value in [0.0, 121.0, Double.nan, Double.infinity] {
+                settings.waitReminderMinutes = value
+                do { try settings.validate(); check(false, "Invalid reminder threshold was accepted") }
+                catch { check(true, "Invalid reminder threshold was rejected") }
+            }
+        } catch { failures.append("Reminder settings could not round-trip: \(error)") }
+        do {
+            var settings = AppSettings()
+            check(settings.bubbleScale == 0.85 && settings.waveHeight == 1.3, "New installs need a smaller ring and taller waves")
+            settings.sessionGroups = [SessionGroup(id: "pair", name: "Work pair", members: ["remote:atlas", "local:thread-alpha"])]
+            try settings.validate()
+            let restored = try decoder.decode(AppSettings.self, from: settings.encoded())
+            check(restored.sessionGroups.count == 1 && restored.sessionGroups[0].members == settings.sessionGroups[0].members,
+                  "A user-selected cross-source group must survive saving")
+            let invalid = [
+                [SessionGroup(id: "pair", name: String(repeating: "👩‍💻", count: 20), members: ["remote:atlas", "remote:nova"])],
+                [SessionGroup(id: "pair", name: "Work", members: ["remote:atlas"])],
+                [SessionGroup(id: "pair", name: "Work", members: ["remote:atlas", "remote:atlas"])],
+                [SessionGroup(id: "pair", name: "Work", members: ["remote:atlas", "local:"])],
+                [SessionGroup(id: "pair", name: "Work", members: ["remote:atlas", "local:thread-alpha"]), SessionGroup(id: "other", name: "Other", members: ["remote:atlas", "remote:nova"])]]
+            for groups in invalid {
+                settings.sessionGroups = groups
+                do { try settings.validate(); check(false, "Invalid or overlapping group was accepted") }
+                catch { check(true, "Invalid or overlapping group was rejected") }
+            }
+            settings.sessionGroups = []
+            for style in ["plasma", "aurora", "radar"] {
+                settings.waveStyle = style
+                do { try settings.validate(); check(true, "New wave style accepted") }
+                catch { check(false, "New wave style rejected") }
+            }
+        } catch { failures.append("Group settings could not round-trip: \(error)") }
     }
 
     func injectedSkinExtension() {

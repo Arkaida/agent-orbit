@@ -10,6 +10,7 @@ import time
 from completion_tracker import CompletionTracker
 from activity_tracker import ActivityTracker
 from usage_tracker import UsageTracker
+from response_tracker import SessionResponseTracker
 from error_tracker import ErrorTracker
 from monitor import Model, Stream, LocalStream
 from configuration import data_dir, defaults, load_settings, read_follow as configured_follow
@@ -164,6 +165,10 @@ def source_payload(name, state, health, selected):
         return name + ':' + value if name == 'remote' else value
     rows = []
     for row in state.rows:
+        # A settings change can arrive before the next collector frame. Do not
+        # keep emitting a deselected chat (or its overdue episode) meanwhile.
+        if selected and row['session'] not in selected and row.get('thread_id') not in selected:
+            continue
         compact = {key: value for key, value in row.items()
                    if key not in ('screen', 'fingerprint', 'activity', 'lifecycle_events')}
         compact.update(pane_id=pane_id(row['pane_id']), source=name,
@@ -180,6 +185,7 @@ def run(args):
     root = Path(__file__).resolve().parent
     runtimes = {}
     usage = UsageTracker()
+    responses = SessionResponseTracker()
     next_config, config_error, stopping = 0, '', False
     # Invalid settings must still produce a first frame so the UI can explain
     # the error and recover when the user saves a corrected file. No source is
@@ -203,6 +209,7 @@ def run(args):
                         settings['remote_enabled'] = True
                     if args.socket is not None:
                         settings['tmux_socket'] = args.socket
+                    responses.configure(settings)
                     selected = read_follow(root)
                     desired = {}
                     if settings['remote_enabled']:
@@ -235,18 +242,22 @@ def run(args):
                         runtime['discovered'] = [dict(thread_id=r.get('thread_id'), session=r['session']) for r in frame['panes']]
                         frame = dict(frame, panes=[r for r in frame['panes'] if not focus or r.get('thread_id') in focus])
                     sampled_at = time.monotonic()
+                    sampled_wall = time.time()
                     sample_gap = max(2, stream.interval * 3)
                     state.accept(frame, focus if name == 'remote' else [], stream.connections,
-                                 sampled_at, time.time(), max_gap_seconds=sample_gap)
+                                 sampled_at, sampled_wall, max_gap_seconds=sample_gap)
                     if 'panes' in frame:
                         # Usage receives genuine collector samples only. The
                         # 10 Hz display payload below must never establish a
                         # second baseline or accumulate another usage delta.
                         observed = source_payload(name, state, dict(connected=True), focus)['rows']
+                        sample_epoch = (runtime['signature'], stream.connections, state.generation, tuple(focus))
                         usage.observe(name, observed, sampled_at,
-                                      epoch=(runtime['signature'], stream.connections,
-                                             state.generation, tuple(focus)),
+                                      epoch=sample_epoch,
                                       max_gap_seconds=sample_gap)
+                        responses.observe(name, observed, sampled_at, sampled_wall,
+                                          epoch=sample_epoch, max_gap_seconds=sample_gap,
+                                          selection=(runtime['signature'], tuple(focus)))
                     if name == 'remote':
                         for row in frame.get('panes', []):
                             if row.get('lifecycle_cursor'):
@@ -269,7 +280,11 @@ def run(args):
                            **health,
                            received_frames=sum(r['stream'].total_frames for r in runtimes.values()), emitted_at=time.time(),
                            connections=connections, local_sessions=discovered)
-            payload['metrics'] = usage.aggregate(payload['rows'], time.monotonic(), connections)
+            metrics_at = time.monotonic()
+            payload['metrics'] = usage.aggregate(payload['rows'], metrics_at, connections)
+            payload['rows'] = responses.annotate(payload['rows'], metrics_at, connections, settings)
+            payload['rows'] = [dict(row, usage_metrics=usage.pane_metrics(row, metrics_at, connections))
+                               for row in payload['rows']]
             print(json.dumps(payload, ensure_ascii=False), flush=True)
             time.sleep(.1)
     finally:

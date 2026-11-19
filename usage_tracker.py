@@ -232,3 +232,40 @@ class UsageTracker:
         # selected or replaced by a new identity do not accumulate forever.
         self.records = {key: record for key, record in self.records.items() if key in targets}
         return result
+
+    def pane_metrics(self, row, now, connections=None):
+        """Read one pane's own root log without advancing counters/baselines."""
+        result = dict(scope='root_session', window_seconds=self.window,
+                      work_window_seconds=self.work_window, usage_sessions=1,
+                      usage_covered=0, tools_covered=0, live_usage_covered=0,
+                      live_tools_covered=0, consumption_per_second=None,
+                      upstream_tokens_per_second=None, tools_per_minute=None)
+        result.update((field, None) for field in TOKEN_FIELDS)
+        source = row.get('source', 'remote')
+        identity = _identity(row)
+        record = self.records.get((source, identity)) if identity is not None else None
+        if record is None:
+            return result
+        if record['tokens'] is not None:
+            result.update(record['tokens'])
+            result['usage_covered'] = 1
+        if record['tools'] is not None:
+            result['tools_covered'] = 1
+        health = ({connection['id']: connection.get('connected') is True for connection in connections}
+                  if connections is not None else {})
+        sampled_at = self.source_samples.get(source)
+        live = (row.get('available') is not False and row.get('state') != 'missing' and
+                health.get(source, connections is None) and sampled_at is not None and
+                0 <= now - sampled_at <= self.source_gaps.get(source, self.max_gap))
+        if not live:
+            return result
+        if record['usage_ready']:
+            samples = [sample for sample in record['usage_samples'] if now - self.window < sample[0] <= now]
+            result.update(live_usage_covered=1,
+                          consumption_per_second=round(sum(sample[1] for sample in samples) / self.window, 3),
+                          upstream_tokens_per_second=round(sum(sample[2] for sample in samples) / self.window, 3))
+        if record['tools_ready']:
+            samples = [sample for sample in record['tools_samples'] if now - self.work_window < sample[0] <= now]
+            result.update(live_tools_covered=1,
+                          tools_per_minute=round(sum(sample[1] for sample in samples) * 60 / self.work_window, 3))
+        return result

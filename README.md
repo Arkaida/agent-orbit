@@ -26,9 +26,18 @@ Monitor **Codex CLI and Claude Code CLI sessions** from a compact always-on-top 
 
 ## 看看它如何工作
 
-[![Watch the privacy-safe demo](docs/media/demo.gif)](docs/media/agent-orbit-demo.mp4)
+https://github.com/user-attachments/assets/13b256c0-9bb2-414b-a473-045c255d25ad
 
-[观看 / 下载介绍视频 MP4](docs/media/agent-orbit-demo.mp4) · 视频使用应用原生界面与虚构会话数据，未录入真实桌面、主机或对话。
+[下载完整介绍视频 MP4](https://github.com/Arkaida/agent-orbit/releases/latest/download/agent-orbit-demo.mp4)
+
+视频可直接点击播放。全部画面使用应用原生界面与虚构会话数据，未录入真实桌面、主机或对话。
+
+<details>
+<summary>展开 GIF 动图预览</summary>
+
+[![Privacy-safe animated demo](docs/media/demo.gif)](https://github.com/Arkaida/agent-orbit/releases/latest/download/agent-orbit-demo.mp4)
+
+</details>
 
 | 在桌面上看见 | 它代表什么 |
 | --- | --- |
@@ -43,15 +52,17 @@ Monitor **Codex CLI and Claude Code CLI sessions** from a compact always-on-top 
 
 - **本机 + 远端 CLI 监控**：自动发现本机 Codex CLI；通过 SSH 读取远端 tmux 中的 Codex CLI / Claude Code CLI。连接状态彼此独立。
 - **关注重要会话**：分别配置本机和远端关注列表；关闭设置后继续监控。
-- **收起成会话环**：点击展开，拖动移动；会话名沿边缘排列，多会话自动双圈。
+- **分会话效率与待响应**：逐个查看工作时长、等待时长、输出和工具速度；久等提醒可调整阈值、稍后提醒，回答后自动清除旧等待。[提醒规则](docs/RESPONSE.md)
+- **独立或编组，由你配置**：设置中选成员创建互斥组；任一成员工作时不催其他成员，全组共同统计空闲／运行时间。随时移出或拆组，默认不自动编组。
+- **两种悬浮球**：小号球显示待响应和最长等待，完整球显示圆周会话名；单击切换大小，双击打开面板，拖动移动，多会话自动双圈。
 - **完成与异常提醒**：分别控制声音，恢复后自动移除旧异常，不展示执行历史。
 - **统一状态配色**：四套皮肤；名字、状态文字、圆弧与标记使用同一套状态色，可选择皮肤状态色或经典状态色。另可调整置顶、透明度、悬浮球尺寸及显示内容。
-- **自定义外围声浪**：选择随皮肤、柱形、曲线、光点或关闭；分别设置配色、高度与密度。声浪随真实输出活动变化。
+- **自定义外围声浪**：选择随皮肤、柱形、曲线、光点，以及等离子双波、极光光带、雷达涟漪；分别设置配色、高度与密度。声浪随真实输出活动变化；圆周名字下显示累计闲／跑时长。
 - **全局用量总览**：查看会话运行占比、实时消耗、累计 Token、上游输出速度和工具完成速度；读取 CLI 实际用量记录，标明统计覆盖范围。[指标口径](docs/METRICS.md)
 - **保留原工作方式**：远端卡片进入原 tmux 会话，本机卡片唤起 Codex 客户端。
 
-<img src="docs/media/usage-overview.png" width="320" alt="Reported CLI token consumption, cumulative tokens, output throughput and tool completion rate, with synthetic demo data">
-<img src="docs/media/usage-orbit.png" width="176" alt="Floating session ring with aggregate output tokens/s and cumulative tokens, using synthetic demo data">
+<img src="docs/media/usage-overview.png" width="320" alt="Per-session waiting timers, output token rate, tool rate and observed idle/run totals, with synthetic demo data">
+<img src="docs/media/usage-orbit.png" width="176" alt="Floating session ring with idle/run captions and a shared response overview, using synthetic demo data">
 
 <img src="docs/media/themes.png" width="100%" alt="Neon, Aurora, Graphite and Daylight themes">
 
@@ -94,7 +105,7 @@ ao atlas            # 进入原远端 tmux 会话
 - 保留终端的数量不会直接阻止主对话显示等待；无法可靠归属的本机后台终端数量会省略。
 - Codex / Claude 的日志格式会变化；无法确认的状态明确显示待核实，不会把长时间静默直接判为完成。
 
-详见 [状态规则](docs/STATUS.md)、[使用指南](docs/USAGE.zh-CN.md)、[用量指标](docs/METRICS.md)、[颜色分析与统一接口](docs/THEMING.md) 和 [第三方许可](THIRD_PARTY_NOTICES.md)。
+详见 [状态规则](docs/STATUS.md)、[使用指南](docs/USAGE.zh-CN.md)、[待响应与悬浮球](docs/RESPONSE.md)、[用量指标](docs/METRICS.md)、[颜色分析与统一接口](docs/THEMING.md) 和 [第三方许可](THIRD_PARTY_NOTICES.md)。
 
 ## 开发与贡献
 
