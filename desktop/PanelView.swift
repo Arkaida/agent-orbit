@@ -54,6 +54,102 @@ struct StatusMetric: View {
     }
 }
 
+struct UsageMetricCell: View {
+    let label: String
+    let value: String
+    let unit: String
+    var role: ThemeRole = .accent
+    var body: some View {
+        VStack(alignment: .leading, spacing: 3) {
+            Text(label).font(.system(size: 8.5)).foregroundColor(ThemePalette.ui(.muted))
+            HStack(alignment: .firstTextBaseline, spacing: 4) {
+                Text(value).font(.system(size: 14, weight: .medium, design: .monospaced)).monospacedDigit()
+                    .foregroundColor(ThemePalette.ui(value == "—" ? .muted : role))
+                Text(unit).font(.system(size: 8, design: .monospaced)).foregroundColor(ThemePalette.ui(.muted))
+            }.lineLimit(1).minimumScaleFactor(0.8)
+        }.frame(maxWidth: .infinity, alignment: .leading)
+    }
+}
+
+struct UsageOverview: View {
+    let metrics: UsageMetrics?
+    let connected: Bool
+    @State private var showDetails = false
+    @AppStorage("usageOverviewExpanded") private var expanded = true
+    var body: some View {
+        VStack(spacing: expanded ? 7 : 0) {
+            HStack(spacing: 5) {
+                Button { expanded.toggle() } label: {
+                    HStack(spacing: 5) {
+                        Image(systemName: expanded ? "chevron.down" : "chevron.right").font(.system(size: 7, weight: .semibold))
+                            .foregroundColor(ThemePalette.ui(.muted))
+                        Text("总运行率").font(.system(size: 9, weight: .medium)).foregroundColor(ThemePalette.ui(.text))
+                        Text(connected ? metrics?.utilizationText ?? "—" : "—")
+                            .font(.system(size: 11, weight: .medium, design: .monospaced)).monospacedDigit()
+                            .foregroundColor(ThemePalette.ui(connected ? .running : .offline))
+                        Text(connected && metrics != nil ? "\(metrics?.runningSessions ?? 0)/\(metrics?.knownSessions ?? 0) 会话" : "—/— 会话")
+                            .font(.system(size: 8)).foregroundColor(ThemePalette.ui(.muted))
+                        Spacer(minLength: 0)
+                    }.contentShape(Rectangle())
+                }.buttonStyle(.plain).accessibilityLabel(expanded ? "收起用量总览" : "展开用量总览")
+                    .help("运行中的关注会话 ÷ 在线且状态已确认的关注会话。点击展开或收起；不代表 CPU 或 GPU 利用率。")
+                Button { showDetails.toggle() } label: { Image(systemName: "info.circle").font(.system(size: 10)) }
+                    .buttonStyle(.plain).foregroundColor(ThemePalette.ui(.muted))
+                    .accessibilityLabel("查看用量统计说明")
+                    .popover(isPresented: $showDetails, arrowEdge: .bottom) { details }
+            }
+            if expanded {
+                HStack(spacing: 10) {
+                    UsageMetricCell(label: "实时消耗" + (metrics?.liveUsageIsPartial == true ? " · 部分" : ""), value: metrics?.liveRate(metrics?.consumptionPerSecond, connected: connected) ?? "—", unit: "tok/s")
+                    UsageMetricCell(label: "总消耗" + (metrics?.usageIsPartial == true ? " · 部分" : ""), value: UsageMetrics.amount(metrics?.totalTokens), unit: "tok", role: connected ? .text : .muted)
+                }
+                HStack(spacing: 10) {
+                    UsageMetricCell(label: "上游速度" + (metrics?.liveUsageIsPartial == true ? " · 部分" : ""), value: metrics?.liveRate(metrics?.upstreamTokensPerSecond, connected: connected) ?? "—", unit: "输出 tok/s", role: .secondaryAccent)
+                    UsageMetricCell(label: "工作速度" + (metrics?.liveWorkIsPartial == true ? " · 部分" : ""), value: metrics?.liveRate(metrics?.toolsPerMinute, connected: connected) ?? "—", unit: "工具次/min", role: .waiting)
+                }
+                HStack(spacing: 4) {
+                    Text("主会话日志")
+                    Spacer(minLength: 0)
+                    Text(metrics == nil ? "统计准备中" : "累计 \(metrics?.usageCoverageText ?? "0/0") · 实时 \(connected ? metrics?.liveUsageCovered ?? 0 : 0)/\(metrics?.usageSessions ?? 0)")
+                }.font(.system(size: 8)).foregroundColor(ThemePalette.ui(.muted))
+            }
+        }.padding(.horizontal, 9).padding(.vertical, 7)
+            .background(RoundedRectangle(cornerRadius: 9).fill(ThemePalette.ui(.accent).opacity(0.035)))
+            .overlay(RoundedRectangle(cornerRadius: 9).stroke(ThemePalette.ui(.accent).opacity(0.13), lineWidth: 0.7))
+            .accessibilityElement(children: .contain)
+    }
+    var details: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Text("关注会话 · 用量总览").font(.system(size: 12, weight: .semibold))
+            VStack(alignment: .leading, spacing: 4) {
+                detailValue("实时消耗", metrics?.liveRate(metrics?.consumptionPerSecond, connected: connected) ?? "—", "tok/s")
+                detailValue("总消耗", UsageMetrics.amount(metrics?.totalTokens), "tok")
+                detailValue("上游输出", metrics?.liveRate(metrics?.upstreamTokensPerSecond, connected: connected) ?? "—", "tok/s")
+                detailValue("工作速度", metrics?.liveRate(metrics?.toolsPerMinute, connected: connected) ?? "—", "工具次/min")
+            }.font(.system(size: 10, design: .monospaced))
+            Text("累计为关注主会话日志中已核实的用量，包含开始监控前的记录，不包含独立子智能体日志。切换关注会话会改变统计范围。")
+            VStack(alignment: .leading, spacing: 4) {
+                detailLine("输入", metrics?.inputTokens)
+                detailLine("输出", metrics?.outputTokens)
+                detailLine("缓存读取", metrics?.cachedInputTokens)
+                detailLine("缓存写入", metrics?.cacheWriteInputTokens)
+            }.font(.system(size: 10, design: .monospaced))
+            Text("输入已包含缓存读取与缓存写入；缓存是输入的细分，不再重复相加。总消耗＝输入＋输出。Token 不等于费用。")
+            Text("实时消耗与上游速度：近 \(metrics?.windowSeconds ?? 30) 秒已记录的 Token 增量除以该窗口时长。Claude 通常在响应结束后写入用量，因此是日志结算速度。工作速度：近 \(metrics?.workWindowSeconds ?? 60) 秒工具结果次数，不代表任务完成率。")
+            Text("覆盖：用量 \(metrics?.usageCoverageText ?? "0/0")，工具 \(metrics?.workCoverageText ?? "0/0")。实时覆盖：用量 \(connected ? metrics?.liveUsageCovered ?? 0 : 0)/\(metrics?.usageSessions ?? 0)，工具 \(connected ? metrics?.liveToolsCovered ?? 0 : 0)/\(metrics?.usageSessions ?? 0)。离线保留累计，速率显示 —；部分在线只统计已覆盖的在线部分。")
+            Text("运行率已确认 \(metrics?.knownSessions ?? 0)/\(metrics?.monitoredSessions ?? 0) 个关注会话；离线或状态未知的会话不计入分母。")
+        }.font(.system(size: 10)).foregroundColor(ThemePalette.ui(.text))
+            .fixedSize(horizontal: false, vertical: true).padding(14).frame(width: 290)
+            .background(ThemePalette.ui(.surface)).preferredColorScheme(ThemePalette.scheme)
+    }
+    func detailLine(_ label: String, _ value: Int?) -> some View {
+        detailValue(label, UsageMetrics.amount(value), "tok")
+    }
+    func detailValue(_ label: String, _ value: String, _ unit: String) -> some View {
+        HStack { Text(label); Spacer(); Text(value + " " + unit) }
+    }
+}
+
 struct PaneCard: View {
     let pane: Pane
     let alert: Bool
@@ -318,6 +414,7 @@ struct PanelView: View {
         VStack(spacing: 0) {
             header
             summary
+            UsageOverview(metrics: model.metrics, connected: model.connected).padding(.horizontal, 11).padding(.bottom, 8)
             notice
             NeonRule()
             ScrollView {

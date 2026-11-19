@@ -78,6 +78,60 @@ struct LocalSession: Decodable, Identifiable {
     var id: String { threadId ?? session }
 }
 
+/// Aggregate counters come only from CLI usage records, independent of visual activity.
+struct UsageMetrics: Decodable {
+    var utilizationPercent: Double?
+    var runningSessions: Int?
+    var knownSessions: Int?
+    var monitoredSessions: Int?
+    var usageCovered: Int?
+    var toolsCovered: Int?
+    var usageSessions: Int?
+    var totalTokens: Int?
+    var inputTokens: Int?
+    var outputTokens: Int?
+    var cachedInputTokens: Int?
+    var cacheWriteInputTokens: Int?
+    var consumptionPerSecond: Double?
+    var upstreamTokensPerSecond: Double?
+    var toolsPerMinute: Double?
+    var liveUsageCovered: Int?
+    var liveToolsCovered: Int?
+    var windowSeconds: Int?
+    var workWindowSeconds: Int?
+    var scope: String?
+
+    static func amount(_ value: Int?) -> String {
+        guard let value = value, value >= 0 else { return "—" }
+        if value >= 1_000_000_000 { return String(format: "%.2fB", Double(value) / 1_000_000_000) }
+        if value >= 1_000_000 { return String(format: "%.2fM", Double(value) / 1_000_000) }
+        if value >= 1_000 { return String(format: "%.1fk", Double(value) / 1_000) }
+        return "\(value)"
+    }
+    static func rate(_ value: Double?) -> String {
+        guard let value = value, value.isFinite, value >= 0 else { return "—" }
+        if value >= 1_000_000_000 { return String(format: "%.2fB", value / 1_000_000_000) }
+        if value >= 1_000_000 { return String(format: "%.2fM", value / 1_000_000) }
+        if value >= 10_000 { return String(format: "%.1fk", value / 1_000) }
+        return String(format: value >= 100 ? "%.0f" : "%.1f", value)
+    }
+    var utilizationText: String {
+        guard let value = utilizationPercent, value.isFinite else { return "—" }
+        return String(format: "%.0f%%", min(100, max(0, value)))
+    }
+    var usageCoverageText: String { "\(usageCovered ?? 0)/\(usageSessions ?? 0)" }
+    var workCoverageText: String { "\(toolsCovered ?? 0)/\(usageSessions ?? 0)" }
+    var usageIsPartial: Bool { (usageCovered ?? 0) < (usageSessions ?? 0) }
+    var liveUsageIsPartial: Bool { (liveUsageCovered ?? 0) < (usageSessions ?? 0) }
+    var liveWorkIsPartial: Bool { (liveToolsCovered ?? 0) < (usageSessions ?? 0) }
+    func liveRate(_ value: Double?, connected: Bool) -> String {
+        Self.rate(connected ? value : nil)
+    }
+    func accessibilitySummary(connected: Bool) -> String {
+        "总运行率 \(connected ? utilizationText : "—")，实时消耗 \(liveRate(consumptionPerSecond, connected: connected)) tok/s，累计 \(Self.amount(totalTokens)) tok，上游输出 \(liveRate(upstreamTokensPerSecond, connected: connected)) tok/s，工作速度 \(liveRate(toolsPerMinute, connected: connected)) 工具次/min，用量覆盖 \(usageCoverageText)"
+    }
+}
+
 struct Snapshot: Decodable {
     var rows: [Pane]
     var events: [Completion]
@@ -91,6 +145,7 @@ struct Snapshot: Decodable {
     var connectionState: String?
     var connections: [SourceConnection]?
     var localSessions: [LocalSession]?
+    var metrics: UsageMetrics?
 }
 
 struct ErrorEvent: Decodable, Identifiable {
@@ -120,6 +175,7 @@ final class PanelModel: ObservableObject {
     @Published var settings: AppSettings
     @Published var connections: [SourceConnection] = []
     @Published var localSessions: [LocalSession] = []
+    @Published var metrics: UsageMetrics?
     @Published var rows: [Pane] = []
     @Published var followed: [String] = []
     @Published var connectionState = "connecting"
@@ -341,6 +397,7 @@ final class PanelModel: ObservableObject {
         localOutageAlerted = false
         connections = snapshot.connections ?? []
         localSessions = snapshot.localSessions ?? []
+        metrics = snapshot.metrics
         rows = snapshot.rows
         followed = snapshot.followed
         connected = snapshot.connected

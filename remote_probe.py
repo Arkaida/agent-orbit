@@ -313,6 +313,358 @@ def find_agent(processes, root_pid):
     return stopped[0] if stopped else (0, '', '')
 
 
+class UsageLogWatcher:
+    """Rebuild root-session usage without borrowing visual activity counters.
+
+    History is read from byte zero in bounded chunks, independently of the
+    lifecycle reader's tail cursor. Numeric values describe observed records;
+    completeness flags stay false until the scan reaches the current EOF.
+    """
+    TOKEN_FIELDS = ('input_tokens', 'output_tokens', 'cached_input_tokens',
+                    'cache_write_input_tokens', 'total_tokens')
+    CLAUDE_FIELDS = ('input_tokens', 'output_tokens', 'cache_read_input_tokens',
+                     'cache_creation_input_tokens')
+    MAX_LINE_BYTES = 4194304
+
+    def __init__(self, max_bytes=1048576):
+        self.max_bytes = max(1, int(max_bytes))
+        self.files = {}
+        self.next_cleanup = 0
+
+    @staticmethod
+    def number(value):
+        # bool is an int subclass, but it is not a token count.
+        return value if type(value) is int and value >= 0 else None
+
+    @classmethod
+    def empty(cls, agent):
+        result = dict(identity=None, agent=agent, scope='root_session',
+                      usage_available=False, usage_complete=False,
+                      tool_completions=None, tools_complete=False)
+        result.update((field, None) for field in cls.TOKEN_FIELDS)
+        return result
+
+    def new_file(self, agent, path, info, previous=None):
+        generation = previous['generation'] + 1 if previous is not None else 0
+        saved = dict(key=(info.st_dev, info.st_ino), offset=0, buffer=b'',
+                     anchor=b'', discarding=False, generation=generation,
+                     last_seen=time.monotonic(),
+                     scan_error=False, usage_error=False, tools_error=False,
+                     usage_position=-1, usage_barrier=-1, tail_usage_complete=False,
+                     root=True if agent == 'claude' else None,
+                     codex_usage=None, claude_usage={}, claude_sums=[0] * 4,
+                     claude_unknown=[0] * 4, tool_ids={}, tool_parents=[], tool_count=0,
+                     identity='{}:{}:{}:{}:{}'.format(agent, path, info.st_dev,
+                                                     info.st_ino, generation))
+        self.files[(agent, path)] = saved
+        return saved
+
+    @staticmethod
+    def tool_result(saved, identities):
+        if not identities:
+            saved['tools_error'] = True
+            return
+        parents = saved['tool_parents']
+        groups = set()
+        for identity in identities:
+            group = saved['tool_ids'].get(identity)
+            if group is None:
+                continue
+            while parents[group] != group:
+                parents[group] = parents[parents[group]]
+                group = parents[group]
+            groups.add(group)
+        if not groups:
+            group = len(parents)
+            parents.append(group)
+            saved['tool_count'] += 1
+        else:
+            group = min(groups)
+            for other in groups:
+                if other != group:
+                    parents[other] = group
+                    saved['tool_count'] -= 1
+        # A later record may bridge two aliases previously seen separately.
+        # Merge their equivalence groups instead of keeping both completions.
+        for identity in identities:
+            saved['tool_ids'][identity] = group
+
+    @staticmethod
+    def usage_gap(saved, agent, position):
+        if agent == 'codex':
+            if position < saved['usage_position']:
+                return
+            saved['usage_barrier'] = max(saved['usage_barrier'], position)
+        saved['usage_error'] = True
+
+    def consume_codex(self, saved, item, position=0):
+        payload = item.get('payload')
+        if not isinstance(payload, dict):
+            if item.get('type') in ('session_meta', 'event_msg', 'response_item'):
+                saved['scan_error'] = True
+                self.usage_gap(saved, 'codex', position)
+            return
+        if item.get('type') == 'session_meta':
+            source = payload.get('source')
+            # A child/guardian rollout must never be billed again as a root.
+            saved['root'] = isinstance(source, str) and bool(source.strip())
+            return
+        if saved['root'] is not True:
+            return
+        kind = payload.get('type')
+        if item.get('type') == 'event_msg' and kind == 'token_count':
+            if position < saved['usage_position']:
+                return
+            info = payload.get('info')
+            if info is None:  # Rate-limit-only events contain no usage.
+                return
+            usage = info.get('total_token_usage') if isinstance(info, dict) else None
+            if not isinstance(usage, dict):
+                self.usage_gap(saved, 'codex', position)
+                return
+            incoming = {field: self.number(usage.get(field)) for field in self.TOKEN_FIELDS}
+            if incoming['input_tokens'] is None or incoming['output_tokens'] is None:
+                self.usage_gap(saved, 'codex', position)
+                return
+            total = incoming['input_tokens'] + incoming['output_tokens']
+            # A later authoritative cumulative snapshot covers earlier usage
+            # gaps, even when a malformed old record still makes tools partial.
+            invalid = bool(
+                'total_tokens' in usage and incoming['total_tokens'] != total or
+                any(field in usage and incoming[field] is None
+                    for field in ('cached_input_tokens', 'cache_write_input_tokens')))
+            if invalid:
+                saved['usage_barrier'] = max(saved['usage_barrier'], position)
+            elif position >= saved['usage_barrier']:
+                saved['usage_barrier'] = -1
+            saved['usage_error'] = invalid or saved['usage_barrier'] > position
+            incoming['total_tokens'] = total
+            # These are cumulative snapshots, not per-event deltas.
+            saved['codex_usage'] = incoming
+            saved['usage_position'] = position
+        elif item.get('type') == 'response_item' and kind in ('function_call_output', 'custom_tool_call_output'):
+            identities = [('call', payload['call_id'])] if isinstance(payload.get('call_id'), str) and payload['call_id'] else []
+            if isinstance(payload.get('id'), str) and payload['id']:
+                identities.append(('item', payload['id']))
+            self.tool_result(saved, identities)
+        elif (item.get('type') == 'response_item' and
+              kind in ('web_search_call', 'local_shell_call', 'image_generation_call') and
+              payload.get('status') in ('completed', 'failed')):
+            tid = payload.get('id')
+            self.tool_result(saved, [('item', tid)] if isinstance(tid, str) and tid else [])
+
+    def consume_claude(self, saved, item):
+        if item.get('isSidechain'):
+            return
+        message = item.get('message')
+        if item.get('type') == 'assistant' and not item.get('isApiErrorMessage'):
+            if not isinstance(message, dict) or not isinstance(message.get('id'), str) or not message['id']:
+                saved['usage_error'] = True
+            else:
+                mid = message['id']
+                usage = message.get('usage')
+                if mid not in saved['claude_usage']:
+                    saved['claude_usage'][mid] = [None] * 4
+                    saved['claude_unknown'] = [count + 1 for count in saved['claude_unknown']]
+                previous = saved['claude_usage'][mid]
+                if not isinstance(usage, dict):
+                    usage = {}
+                for index, field in enumerate(self.CLAUDE_FIELDS):
+                    value = self.number(usage.get(field))
+                    if field in usage and value is None:
+                        saved['usage_error'] = True
+                    if value is None:
+                        continue
+                    old = previous[index]
+                    # Streamed Claude records repeat the same billed message.
+                    # Merge each counter once, including larger final snapshots.
+                    if old is None:
+                        saved['claude_unknown'][index] -= 1
+                        saved['claude_sums'][index] += value
+                        previous[index] = value
+                    elif value > old:
+                        saved['claude_sums'][index] += value - old
+                        previous[index] = value
+        content = message.get('content') if isinstance(message, dict) else None
+        if isinstance(content, list):
+            for block in content:
+                if not isinstance(block, dict) or block.get('type') != 'tool_result':
+                    continue
+                tid = block.get('tool_use_id')
+                self.tool_result(saved, [('tool', tid)] if isinstance(tid, str) and tid else [])
+
+    def consume_line(self, saved, agent, line, position=0):
+        if not line.strip():
+            return
+        if len(line) > self.MAX_LINE_BYTES:
+            saved['scan_error'] = True
+            self.usage_gap(saved, agent, position)
+            return
+        try:
+            item = json.loads(line)
+        except (ValueError, TypeError, RecursionError):
+            saved['scan_error'] = True
+            self.usage_gap(saved, agent, position)
+            return
+        if not isinstance(item, dict):
+            saved['scan_error'] = True
+            self.usage_gap(saved, agent, position)
+        elif agent == 'codex':
+            self.consume_codex(saved, item, position)
+        else:
+            self.consume_claude(saved, item)
+
+    def result(self, saved, agent, complete=False):
+        result = self.empty(agent)
+        result['identity'] = saved['identity']
+        if saved['root'] is not True:
+            return result
+        usage = saved['codex_usage'] if agent == 'codex' else None
+        if agent == 'claude' and saved['claude_usage']:
+            values = [None if missing else count for missing, count in
+                      zip(saved['claude_unknown'], saved['claude_sums'])]
+            raw, output, cached, written = values
+            # Both agents expose input INCLUDING cache, so total=input+output.
+            incoming = raw + cached + written if all(value is not None for value in (raw, cached, written)) else None
+            usage = dict(input_tokens=incoming, output_tokens=output,
+                         cached_input_tokens=cached, cache_write_input_tokens=written,
+                         total_tokens=incoming + output if incoming is not None and output is not None else None)
+        if usage:
+            result.update(usage)
+            result['usage_available'] = usage['input_tokens'] is not None and usage['output_tokens'] is not None
+        coverage = complete and not saved['scan_error']
+        usage_coverage = complete or agent == 'codex' and saved['tail_usage_complete']
+        result['usage_complete'] = bool(usage_coverage and result['usage_available'] and not saved['usage_error'])
+        result['tool_completions'] = saved['tool_count']
+        result['tools_complete'] = bool(coverage and not saved['tools_error'])
+        return result
+
+    def codex_tail_usage(self, saved, path):
+        """Find a recent cumulative snapshot without waiting for tool replay.
+
+        The bounded tail is checked again while history is rebuilding, so new
+        usage remains observable. A partial or unverifiable tail stays partial.
+        """
+        try:
+            with open(path, 'rb') as log:
+                info = os.fstat(log.fileno())
+                if saved['key'] != (info.st_dev, info.st_ino) or info.st_size < saved['offset']:
+                    return
+                start = max(0, info.st_size - self.max_bytes)
+                partial_start = False
+                if start:
+                    log.seek(start - 1)
+                    partial_start = log.read(1) != b'\n'
+                log.seek(start)
+                data = log.read(self.max_bytes)
+                if os.fstat(log.fileno()).st_size != start + len(data):
+                    return
+            pieces = data.split(b'\n')
+            position = start
+            if partial_start:
+                position += len(pieces.pop(0)) + 1  # A leading partial line.
+            positioned = []
+            for line in pieces:
+                positioned.append((position, line))
+                position += len(line) + 1
+            pending_tail = False
+            for position, line in reversed(positioned):
+                if not line.strip():
+                    continue
+                try:
+                    item = json.loads(line)
+                except (ValueError, TypeError, RecursionError):
+                    if not data.endswith(b'\n') and position + len(line) == start + len(data):
+                        pending_tail = True
+                    else:
+                        self.usage_gap(saved, 'codex', position)
+                    continue
+                if not isinstance(item, dict):
+                    self.usage_gap(saved, 'codex', position)
+                    continue
+                payload = item.get('payload')
+                if item.get('type') != 'event_msg' or not isinstance(payload, dict) or payload.get('type') != 'token_count':
+                    continue
+                if payload.get('info') is None:
+                    continue
+                self.consume_codex(saved, item, position)
+                usage = payload['info'].get('total_token_usage') if isinstance(payload['info'], dict) else None
+                if isinstance(usage, dict) and all(self.number(usage.get(field)) is not None for field in ('input_tokens', 'output_tokens')):
+                    saved['tail_usage_complete'] = not saved['usage_error'] and not pending_tail
+                    return
+        except OSError:
+            pass
+
+    def sample(self, path, agent):
+        if agent not in ('codex', 'claude') or path is None:
+            return self.empty(agent)
+        path = os.fsdecode(os.fspath(path))
+        # Claude's background files can be resolved elsewhere for activity,
+        # but never contribute another copy of root-session accounting here.
+        if agent == 'claude' and ('subagents' in path.replace('\\', '/').split('/') or
+                                  os.path.basename(path).startswith('agent-')):
+            return self.empty(agent)
+        saved = self.files.get((agent, path))
+        now = time.monotonic()
+        if saved is not None:
+            saved['last_seen'] = now
+            saved['tail_usage_complete'] = False
+        if now >= self.next_cleanup:
+            self.files = {key: value for key, value in self.files.items()
+                          if now - value['last_seen'] <= 120}
+            self.next_cleanup = now + 10
+        try:
+            with open(path, 'rb') as log:
+                info = os.fstat(log.fileno())
+                reset = saved is None or saved['key'] != (info.st_dev, info.st_ino) or info.st_size < saved['offset']
+                if not reset and saved['anchor']:
+                    log.seek(saved['offset'] - len(saved['anchor']))
+                    reset = log.read(len(saved['anchor'])) != saved['anchor']
+                if reset:
+                    saved = self.new_file(agent, path, info, saved)
+                log.seek(saved['offset'])
+                data = log.read(self.max_bytes)
+                saved['offset'] = log.tell()
+                saved['anchor'] = (saved['anchor'] + data)[-64:]
+                end_info = os.fstat(log.fileno())
+                if end_info.st_size < saved['offset']:
+                    return self.result(saved, agent)
+            position = saved['offset'] - len(data) - len(saved['buffer'])
+            pieces = (saved['buffer'] + data).split(b'\n')
+            saved['buffer'] = pieces.pop()
+            if saved['discarding']:
+                if pieces:
+                    position += len(pieces.pop(0)) + 1
+                    saved['discarding'] = False
+                else:
+                    saved['buffer'] = b''
+            for line in pieces:
+                self.consume_line(saved, agent, line, position)
+                position += len(line) + 1
+            if len(saved['buffer']) > self.MAX_LINE_BYTES:
+                saved['scan_error'] = True
+                self.usage_gap(saved, agent, saved['offset'] - len(saved['buffer']))
+                saved['buffer'] = b''
+                saved['discarding'] = True
+            at_end = saved['offset'] >= end_info.st_size
+            # JSONL permits a complete final record without a trailing newline.
+            # Keep a partial record until the writer finishes it.
+            if at_end and saved['buffer'] and data and not saved['discarding']:
+                try:
+                    json.loads(saved['buffer'])
+                except (ValueError, TypeError, RecursionError):
+                    pass
+                else:
+                    self.consume_line(saved, agent, saved['buffer'], saved['offset'] - len(saved['buffer']))
+                    saved['buffer'] = b''
+            complete = at_end and not saved['buffer'] and not saved['discarding']
+            if agent == 'codex' and saved['root'] is True and not complete:
+                self.codex_tail_usage(saved, path)
+            return self.result(saved, agent, complete)
+        except OSError:
+            return self.result(saved, agent) if saved is not None else self.empty(agent)
+
+
 class RolloutWatcher:
     """Read only new lifecycle events from an unambiguous CLI root log.
 
@@ -819,6 +1171,9 @@ CLAUDE_BACKGROUND = ClaudeBackgroundWatcher()
 CODEX_BACKGROUND = CodexBackgroundWatcher()
 CLAUDE_COMPLETIONS = ClaudeCompletionGuard()
 CODEX_COMPLETIONS = ClaudeCompletionGuard()
+# Limit history work to leave room for the live 0.5s remote refresh.
+# Local reads use the larger default.
+USAGE_LOGS = UsageLogWatcher(max_bytes=262144)
 KNOWN_AGENTS = {}
 
 
@@ -872,10 +1227,12 @@ def snapshot(socket, selected):
         elif agent == 'codex' and pid:
             apply_codex_background(result, CODEX_BACKGROUND.sample(pid, ROLLOUTS.root_log(pid, time.monotonic()), processes, time.monotonic()))
             CODEX_COMPLETIONS.apply(result, pane_id, pid, time.monotonic())
+        usage_path = watcher.root_log(pid, time.monotonic()) if pid and agent in ('codex', 'claude') else None
         panes.append(dict(session=session, window=window, pane=pane, pane_id=pane_id,
                           command=command, agent=agent, cwd=cwd, screen=screen,
                           fingerprint=hashlib.sha256(screen.encode()).hexdigest(),
-                          process_id=pid, event_source=has_events, lifecycle_events=events, lifecycle_cursor=lifecycle_cursor, **result))
+                          process_id=pid, event_source=has_events, lifecycle_events=events, lifecycle_cursor=lifecycle_cursor,
+                          telemetry=USAGE_LOGS.sample(usage_path, agent), **result))
     return dict(panes=panes, sampled_at=time.time(), collection_ms=round((time.monotonic() - started) * 1000))
 
 

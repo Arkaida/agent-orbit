@@ -11,7 +11,7 @@ import subprocess
 import sys
 import time
 
-from remote_probe import EMPTY_ISSUE, detect_failure, issue
+from remote_probe import EMPTY_ISSUE, UsageLogWatcher, detect_failure, issue
 
 LIFECYCLE = frozenset(('task_started', 'turn_started', 'task_complete', 'turn_complete',
                        'turn_aborted', 'turn_failed', 'error', 'stream_error'))
@@ -55,6 +55,7 @@ class LocalCollector:
         self.home = Path(home).expanduser().resolve()
         self.limit, self.runner = limit, runner
         self.files, self.discovery = {}, []
+        self.usage = UsageLogWatcher()
         self.next_discovery = 0
 
     def discover(self):
@@ -91,7 +92,7 @@ class LocalCollector:
                     if sid and parent:
                         children[sid] = (parent, path)
                     continue  # Child/guardian sessions never become root cards.
-                if isinstance(sid, str) and owner:
+                if isinstance(sid, str) and isinstance(payload.get('source'), str) and payload['source'].strip() and owner:
                     found[sid] = dict(path=path, pid=owner, metadata=payload)
             except (OSError, ValueError, TypeError):
                 continue
@@ -186,6 +187,7 @@ class LocalCollector:
                              preview=state['preview'], activity='\n'.join(state['preview']), working='', screen='',
                              fingerprint=hashlib.sha256((last + '\n'.join(state['preview'])).encode()).hexdigest(),
                              lifecycle_cursor=dict(path=str(session['path']), device=state['identity'][0], inode=state['identity'][1], offset=state['offset']),
+                             telemetry=self.usage.sample(session['path'], 'codex'),
                              **state['failure']))
         return dict(panes=rows, sampled_at=time.time(), collection_ms=round((time.monotonic() - started) * 1000))
 

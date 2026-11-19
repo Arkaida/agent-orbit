@@ -47,7 +47,11 @@ Monitor **Codex CLI and Claude Code CLI sessions** from a compact always-on-top 
 - **完成与异常提醒**：分别控制声音，恢复后自动移除旧异常，不展示执行历史。
 - **统一状态配色**：四套皮肤；名字、状态文字、圆弧与标记使用同一套状态色，可选择皮肤状态色或经典状态色。另可调整置顶、透明度、悬浮球尺寸及显示内容。
 - **自定义外围声浪**：选择随皮肤、柱形、曲线、光点或关闭；分别设置配色、高度与密度。声浪随真实输出活动变化。
+- **全局用量总览**：查看会话运行占比、实时消耗、累计 Token、上游输出速度和工具完成速度；读取 CLI 实际用量记录，标明统计覆盖范围。[指标口径](docs/METRICS.md)
 - **保留原工作方式**：远端卡片进入原 tmux 会话，本机卡片唤起 Codex 客户端。
+
+<img src="docs/media/usage-overview.png" width="320" alt="Reported CLI token consumption, cumulative tokens, output throughput and tool completion rate, with synthetic demo data">
+<img src="docs/media/usage-orbit.png" width="176" alt="Floating session ring with aggregate output tokens/s and cumulative tokens, using synthetic demo data">
 
 <img src="docs/media/themes.png" width="100%" alt="Neon, Aurora, Graphite and Daylight themes">
 
@@ -90,7 +94,7 @@ ao atlas            # 进入原远端 tmux 会话
 - 保留终端的数量不会直接阻止主对话显示等待；无法可靠归属的本机后台终端数量会省略。
 - Codex / Claude 的日志格式会变化；无法确认的状态明确显示待核实，不会把长时间静默直接判为完成。
 
-详见 [状态规则](docs/STATUS.md)、[使用指南](docs/USAGE.zh-CN.md)、[颜色分析与统一接口](docs/THEMING.md) 和 [第三方许可](THIRD_PARTY_NOTICES.md)。
+详见 [状态规则](docs/STATUS.md)、[使用指南](docs/USAGE.zh-CN.md)、[用量指标](docs/METRICS.md)、[颜色分析与统一接口](docs/THEMING.md) 和 [第三方许可](THIRD_PARTY_NOTICES.md)。
 
 ## 开发与贡献
 

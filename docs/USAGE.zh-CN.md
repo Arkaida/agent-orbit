@@ -2,7 +2,7 @@
 
 A small native macOS monitor for local Codex CLI and remote Codex CLI / Claude Code CLI sessions.
 
-**5.0.3 — CLI 监控、统一状态配色与可调外围声浪。**
+**5.1.0 — CLI 监控、用量总览、统一状态配色与可调外围声浪。**
 
 用紧凑的置顶窗口或桌面会话环，查看 Agent 何时真正等待下一次输入、何时需要处理异常。绿色表示等待，黄色表示待处理，红色表示异常；运行色随皮肤变化，也可选择经典配色中的橙色。待核实与离线各有独立状态色。保留终端与在线 Agent 数量只提供上下文，不会把已结束的主对话误判成运行中。
 
@@ -15,6 +15,7 @@ A small native macOS monitor for local Codex CLI and remote Codex CLI / Claude C
 - 完成与异常提示音可分别开关；已恢复的问题自动消失，不显示执行历史。
 - 圆周会话名、双圈布局、真实输出活动轨迹，支持收起、拖动和恢复。
 - 外围声浪可选择样式与配色，并调整高度和密度；变化来自实际输出活动。
+- 用量总览显示会话运行占比、实时消耗、总消耗、上游输出速度及工具完成速度；支持本机 Codex 与远端 Codex / Claude，缺失与不完整统计会标明。
 - 只读采集、Python 标准库，无遥测、账户注册、HTTP 服务或远端 hooks。
 
 ## 快速开始
@@ -82,6 +83,12 @@ macOS 个人数据保存于 `~/Library/Application Support/Agent Orbit/`：
 
 设置文件保留旧键 `orbit_label_color`：`theme` 现在表示全局皮肤状态色，`status` 表示全局经典状态色。已有设置可继续使用，无需重建关注列表。开发接口和各皮肤色值见 [颜色分析与统一接口](THEMING.md)。
 
+## 用量总览
+
+面板新增总运行率与四项用量指标：实时消耗、总消耗、上游速度、工作速度。Token 读取 CLI 已报告的实际记录；速度分别采用 30 秒 Token 窗口和 60 秒工具完成窗口。累计范围是当前关注主会话，包含已核实的缓存输入，不重复叠加子智能体日志。
+
+查看统计覆盖数；首次核对、字段缺失或断线时可能出现 `—` 或部分统计。Claude 常在响应完成时写入用量，因此上游速度是日志结算的窗口均速。总运行率表示会话忙碌比例，不是机器利用率。完整口径见 [用量指标](METRICS.md)。
+
 ## 启动与连接检查
 
 首次连接失败时，面板会显示主机、网络、认证或设置错误，并提供“检查设置”入口。请核对 SSH 主机是否与终端中正常使用的别名一致，以及 tmux Socket 是否正确。修正并保存后会自动重连。
@@ -96,7 +103,7 @@ sh ./agent-orbit --local watch --json          # 原始本机采样
 python3 -u desktop_bridge.py                # 按设置合并的处理后数据流
 ```
 
-每行一个 JSON 对象，适合子进程逐行读取。桥接流包含 `rows`、`events`、`error_events`、`active_error_events`、`connections`、`local_sessions` 和全局连接概况。每行会话的 `source` 为 `local` / `remote`，`available` 表示该行来源是否新鲜；**不要用全局 `connected` 代替单行状态**。本地与远端的会话 ID 互不冲突。
+每行一个 JSON 对象，适合子进程逐行读取。桥接流包含 `rows`、`events`、`error_events`、`active_error_events`、`connections`、`local_sessions`、`metrics` 和全局连接概况。每行会话的 `source` 为 `local` / `remote`，`available` 表示该行来源是否新鲜；**不要用全局 `connected` 代替单行状态**。本地与远端的会话 ID 互不冲突。
 
 `background_agents` 表示日志确认正在工作的子任务，`background_agents_total` 是可识别的在线总数，`background_terminals` 是保留终端数量。读取这些数值时检查相应的 `*_observable` / `background_checking`。本机共享 app-server 的终端无法准确归属单个对话时省略数量，不猜成 0。当前不提供 HTTP / REST 接口。
 

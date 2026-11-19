@@ -9,6 +9,7 @@ import time
 
 from completion_tracker import CompletionTracker
 from activity_tracker import ActivityTracker
+from usage_tracker import UsageTracker
 from error_tracker import ErrorTracker
 from monitor import Model, Stream, LocalStream
 from configuration import data_dir, defaults, load_settings, read_follow as configured_follow
@@ -111,12 +112,12 @@ class FeedState:
             self.generation += 1
         self.continuous = False
 
-    def accept(self, frame, selected, connection_id, now_mono, now_wall):
+    def accept(self, frame, selected, connection_id, now_mono, now_wall, max_gap_seconds=2):
         self.model.accept(frame, now_mono)
         if 'panes' not in frame:
             self.break_continuity()
             return
-        if self.last_sample is not None and now_mono - self.last_sample > 2:
+        if self.last_sample is not None and now_mono - self.last_sample > max_gap_seconds:
             self.break_continuity()
         epoch = (connection_id, self.generation, tuple(selected))
         observed = self.activity.update(self.model.visible(selected), now_mono, epoch)
@@ -178,6 +179,7 @@ def source_payload(name, state, health, selected):
 def run(args):
     root = Path(__file__).resolve().parent
     runtimes = {}
+    usage = UsageTracker()
     next_config, config_error, stopping = 0, '', False
     # Invalid settings must still produce a first frame so the UI can explain
     # the error and recover when the user saves a corrected file. No source is
@@ -232,7 +234,19 @@ def run(args):
                     if name == 'local' and 'panes' in frame:
                         runtime['discovered'] = [dict(thread_id=r.get('thread_id'), session=r['session']) for r in frame['panes']]
                         frame = dict(frame, panes=[r for r in frame['panes'] if not focus or r.get('thread_id') in focus])
-                    state.accept(frame, focus if name == 'remote' else [], stream.connections, time.monotonic(), time.time())
+                    sampled_at = time.monotonic()
+                    sample_gap = max(2, stream.interval * 3)
+                    state.accept(frame, focus if name == 'remote' else [], stream.connections,
+                                 sampled_at, time.time(), max_gap_seconds=sample_gap)
+                    if 'panes' in frame:
+                        # Usage receives genuine collector samples only. The
+                        # 10 Hz display payload below must never establish a
+                        # second baseline or accumulate another usage delta.
+                        observed = source_payload(name, state, dict(connected=True), focus)['rows']
+                        usage.observe(name, observed, sampled_at,
+                                      epoch=(runtime['signature'], stream.connections,
+                                             state.generation, tuple(focus)),
+                                      max_gap_seconds=sample_gap)
                     if name == 'remote':
                         for row in frame.get('panes', []):
                             if row.get('lifecycle_cursor'):
@@ -255,6 +269,7 @@ def run(args):
                            **health,
                            received_frames=sum(r['stream'].total_frames for r in runtimes.values()), emitted_at=time.time(),
                            connections=connections, local_sessions=discovered)
+            payload['metrics'] = usage.aggregate(payload['rows'], time.monotonic(), connections)
             print(json.dumps(payload, ensure_ascii=False), flush=True)
             time.sleep(.1)
     finally:

@@ -48,6 +48,7 @@ final class BubbleView: NSView {
     private var connected = false
     private var connectionState = "connecting"
     private var connectionMessage = "正在连接"
+    private var usage: UsageMetrics?
     private var reduceMotion = false
     private var waveStyle = "theme"
     private var wavePalette = "theme"
@@ -91,6 +92,7 @@ final class BubbleView: NSView {
         let wasConnected = connected
         connected = model.connected
         connectionState = model.connectionState
+        usage = model.metrics
         reduceMotion = model.settings.reduceMotion
         waveStyle = model.settings.waveStyle
         wavePalette = model.settings.wavePalette
@@ -169,8 +171,9 @@ final class BubbleView: NSView {
         }
         let summary = connected ? "\(runningCount) 个运行中，\(waitingCount) 个等待输入，\(errorCount) 个异常" : model.message
         let descriptions = nodes.map { $0.name + "（" + $0.agent + "）：" + $0.status + ($0.summary.isEmpty ? "" : "，" + $0.summary) + ($0.running ? "，" + liveText($0) : "") }.joined(separator: "\n")
-        toolTip = summary + "\n" + descriptions + "\n曲线：近 60 秒输出/日志活动；环外：各会话近 24 秒活动，顺时针从旧到新\n悬停查看完整状态，点击展开，拖动移动"
-        setAccessibilityLabel("会话环，" + summary + "，" + descriptions.replacingOccurrences(of: "\n", with: "，"))
+        let usageSummary = usage?.accessibilitySummary(connected: connected) ?? "用量暂不可用"
+        toolTip = summary + "\n" + usageSummary + "\n" + descriptions + "\n曲线：近 60 秒输出/日志活动；环外：各会话近 24 秒活动，顺时针从旧到新\n悬停查看完整状态，点击展开，拖动移动"
+        setAccessibilityLabel("会话环，" + summary + "，" + usageSummary + "，" + descriptions.replacingOccurrences(of: "\n", with: "，"))
         needsDisplay = true
     }
 
@@ -439,8 +442,13 @@ final class BubbleView: NSView {
             drawText(notices.joined(separator: " · "), rect: rect(-42, 34, 84, 10), size: 7.1 * scale,
                      color: !connected ? ThemePalette.session(ThemePalette.connection(connected: connected, state: connectionState)) : errorCount > 0 ? ThemePalette.ns(.error) : connectionState == "partial" || warningCount > 0 ? ThemePalette.ns(.attention) : ThemePalette.ns(.unknown))
         }
-        drawChart(in: rect(-35, -30, 70, 13))
-        drawText(connected ? "输出活动 · 60s" : connectionState == "delayed" ? "采样延迟" : "等待连接", rect: rect(-37, -43, 74, 9), size: 6.5 * scale, color: ThemePalette.ns(.muted))
+        let upstream = usage?.liveRate(usage?.upstreamTokensPerSecond, connected: connected) ?? "—"
+        let total = UsageMetrics.amount(usage?.totalTokens)
+        drawText("↑ " + upstream + " tok/s", rect: rect(-43, -25, 86, 11), size: 8 * scale,
+                 color: upstream == "—" ? ThemePalette.ns(.muted) : ThemePalette.ns(.accent))
+        drawText("总 " + total + " tok" + (usage?.usageIsPartial == true ? "*" : ""), rect: rect(-43, -37, 86, 10), size: 7.5 * scale,
+                 color: ThemePalette.ns(connected ? .text : .muted))
+        drawChart(in: rect(-30, -43, 60, 4))
     }
 
     private func drawChart(in rect: NSRect) {
