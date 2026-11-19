@@ -1,6 +1,8 @@
-.PHONY: test build run package
+.PHONY: test test-theme build run package
 test:
 	python3 -m unittest -v
+test-theme:
+	sh scripts/check_theme.sh
 build:
 	sh build_desktop.sh
 run:

@@ -7,9 +7,9 @@ mkdir -p "$app_dir/Contents/MacOS" "$project_dir/.build-cache-fixed"
 # Some upgraded Command Line Tools retain the pre-Swift-6 duplicate map.
 # The overlay only affects this compiler invocation; system files are untouched.
 if test -f /Library/Developer/CommandLineTools/usr/include/swift/module.modulemap && test -f /Library/Developer/CommandLineTools/usr/include/swift/bridging.modulemap; then
-    /usr/bin/swiftc -O -target "$macos_target" -vfsoverlay "$project_dir/desktop/module-overlay.json" -module-cache-path "$project_dir/.build-cache-fixed" -framework AppKit -framework SwiftUI "$project_dir/desktop/main.swift" "$project_dir/desktop/PanelView.swift" "$project_dir/desktop/OrbitView.swift" "$project_dir/desktop/SettingsView.swift" "$project_dir/desktop/DemoSupport.swift" -o "$app_dir/Contents/MacOS/AgentOrbit"
+    /usr/bin/swiftc -O -target "$macos_target" -vfsoverlay "$project_dir/desktop/module-overlay.json" -module-cache-path "$project_dir/.build-cache-fixed" -framework AppKit -framework SwiftUI "$project_dir/desktop/Theme.swift" "$project_dir/desktop/AppSettings.swift" "$project_dir/desktop/main.swift" "$project_dir/desktop/PanelView.swift" "$project_dir/desktop/OrbitView.swift" "$project_dir/desktop/SettingsView.swift" "$project_dir/desktop/DemoSupport.swift" -o "$app_dir/Contents/MacOS/AgentOrbit"
 else
-    /usr/bin/swiftc -O -target "$macos_target" -module-cache-path "$project_dir/.build-cache-fixed" -framework AppKit -framework SwiftUI "$project_dir/desktop/main.swift" "$project_dir/desktop/PanelView.swift" "$project_dir/desktop/OrbitView.swift" "$project_dir/desktop/SettingsView.swift" "$project_dir/desktop/DemoSupport.swift" -o "$app_dir/Contents/MacOS/AgentOrbit"
+    /usr/bin/swiftc -O -target "$macos_target" -module-cache-path "$project_dir/.build-cache-fixed" -framework AppKit -framework SwiftUI "$project_dir/desktop/Theme.swift" "$project_dir/desktop/AppSettings.swift" "$project_dir/desktop/main.swift" "$project_dir/desktop/PanelView.swift" "$project_dir/desktop/OrbitView.swift" "$project_dir/desktop/SettingsView.swift" "$project_dir/desktop/DemoSupport.swift" -o "$app_dir/Contents/MacOS/AgentOrbit"
 fi
 /bin/cp "$project_dir/desktop/Info.plist" "$app_dir/Contents/Info.plist"
 mkdir -p "$app_dir/Contents/Resources"

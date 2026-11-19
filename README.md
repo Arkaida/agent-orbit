@@ -33,8 +33,10 @@ Monitor **Codex CLI and Claude Code CLI sessions** from a compact always-on-top 
 | 在桌面上看见 | 它代表什么 |
 | --- | --- |
 | 🟢 等待输入 | 主任务已确认结束，可以继续下一轮 |
-| 🟠 运行中 | 正在思考、执行工具或有实际执行的子任务 |
+| 运行中 | 正在思考、执行工具或有实际执行的子任务；使用皮肤运行色，经典配色下为橙色 |
+| 🟡 待处理 | 需要确认、回答或处理暂停 |
 | 🔴 异常 | 服务错误、中断、会话消失等，支持一次提示音 |
+| 待核实 / 离线 | 状态证据不足，或对应来源当前不可用 |
 | 会话环外的活动轨迹 | 最近输出或日志变化，**不是 CPU 或推理效率** |
 
 ## 你可以做什么
@@ -43,11 +45,13 @@ Monitor **Codex CLI and Claude Code CLI sessions** from a compact always-on-top 
 - **关注重要会话**：分别配置本机和远端关注列表；关闭设置后继续监控。
 - **收起成会话环**：点击展开，拖动移动；会话名沿边缘排列，多会话自动双圈。
 - **完成与异常提醒**：分别控制声音，恢复后自动移除旧异常，不展示执行历史。
-- **换一种外观**：四套皮肤，会话名默认跟随皮肤，状态弧与标记保留等待、运行和异常的颜色含义；可调整置顶、透明度、悬浮球尺寸及显示内容。
+- **统一状态配色**：四套皮肤；名字、状态文字、圆弧与标记使用同一套状态色，可选择皮肤状态色或经典状态色。另可调整置顶、透明度、悬浮球尺寸及显示内容。
 - **自定义外围声浪**：选择随皮肤、柱形、曲线、光点或关闭；分别设置配色、高度与密度。声浪随真实输出活动变化。
 - **保留原工作方式**：远端卡片进入原 tmux 会话，本机卡片唤起 Codex 客户端。
 
 <img src="docs/media/themes.png" width="100%" alt="Neon, Aurora, Graphite and Daylight themes">
+
+<img src="docs/media/state-colors.png" width="100%" alt="Six distinct session state colors across four native skins, using synthetic data">
 
 <img src="docs/media/wave-styles.png" width="100%" alt="Waveform styles and palettes using synthetic CLI session data">
 
@@ -86,7 +90,7 @@ ao atlas            # 进入原远端 tmux 会话
 - 保留终端的数量不会直接阻止主对话显示等待；无法可靠归属的本机后台终端数量会省略。
 - Codex / Claude 的日志格式会变化；无法确认的状态明确显示待核实，不会把长时间静默直接判为完成。
 
-详见 [状态规则](docs/STATUS.md)、[使用指南](docs/USAGE.zh-CN.md) 和 [第三方许可](THIRD_PARTY_NOTICES.md)。
+详见 [状态规则](docs/STATUS.md)、[使用指南](docs/USAGE.zh-CN.md)、[颜色分析与统一接口](docs/THEMING.md) 和 [第三方许可](THIRD_PARTY_NOTICES.md)。
 
 ## 开发与贡献
 

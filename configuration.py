@@ -61,7 +61,7 @@ def validate(settings):
     if result.get('theme') not in ('neon', 'aurora', 'graphite', 'daylight'):
         raise ValueError('未知皮肤')
     for key, options, label in [
-            ('orbit_label_color', ('theme', 'status'), '会话名字色'),
+            ('orbit_label_color', ('theme', 'status'), '状态配色'),
             ('wave_style', ('theme', 'bars', 'curve', 'dots', 'off'), '声浪样式'),
             ('wave_palette', ('theme', 'ice', 'aurora', 'ember', 'status'), '声浪配色')]:
         value = result.get(key)

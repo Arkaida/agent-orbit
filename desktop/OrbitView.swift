@@ -10,12 +10,13 @@ final class BubbleView: NSView {
         var agent: String
         var status: String
         var summary: String
-        var color: NSColor
-        var live: Bool
-        var running: Bool
-        var waiting: Bool
-        var attention: Bool
-        var critical: Bool
+        var visualState: SessionVisualState
+        var color: NSColor { ThemePalette.session(visualState) }
+        var live: Bool { visualState != .offline }
+        var running: Bool { visualState == .running }
+        var waiting: Bool { visualState == .waiting }
+        var attention: Bool { visualState == .attention }
+        var critical: Bool { visualState == .error }
         var level: CGFloat
         var outputAge: TimeInterval?
         var observedFor: TimeInterval
@@ -48,12 +49,11 @@ final class BubbleView: NSView {
     private var connectionState = "connecting"
     private var connectionMessage = "正在连接"
     private var reduceMotion = false
-    private var labelColorMode = "theme"
     private var waveStyle = "theme"
     private var wavePalette = "theme"
     private var waveHeight: CGFloat = 1
     private var waveDensity: CGFloat = 1
-    private var tint = NSColor.neonCyan
+    private var tint = ThemePalette.ns(.accent)
     private var hoveredName: String?
     private var tracking: NSTrackingArea?
     private var pressPoint: NSPoint?
@@ -70,6 +70,7 @@ final class BubbleView: NSView {
         case "remote_error": return "采样异常"
         case "config_error": return "设置异常"
         case "monitor_error": return "监控恢复中"
+        case "partial": return "部分离线"
         default: return "正在重连"
         }
     }
@@ -91,12 +92,11 @@ final class BubbleView: NSView {
         connected = model.connected
         connectionState = model.connectionState
         reduceMotion = model.settings.reduceMotion
-        labelColorMode = model.settings.orbitLabelColor
         waveStyle = model.settings.waveStyle
         wavePalette = model.settings.wavePalette
         waveHeight = CGFloat(min(1.5, max(0.5, model.settings.waveHeight)))
         waveDensity = CGFloat(min(1.6, max(0.6, model.settings.waveDensity)))
-        recordOutput(model.rows, now: now)
+        recordOutput(model.rows.filter { model.isConnected($0) }, now: now)
         connectionMessage = model.message
         let groups = Dictionary(grouping: model.rows, by: \.monitorKey)
         var order: [String] = []
@@ -105,15 +105,15 @@ final class BubbleView: NSView {
             order.append(name)
         }
         func priority(_ pane: Pane) -> Int {
-            pane.isCritical ? 0 : pane.needsAttention ? 1 : pane.state == "running" ? 2 : pane.state == "idle" ? 3 : 4
+            pane.visualState(connected: model.isConnected(pane)).priority
         }
         let previouslyRunning = Set(nodes.filter(\.running).map(\.key))
         nodes = order.compactMap { name in
             guard let rows = groups[name], let pane = rows.min(by: { priority($0) < priority($1) }) else { return nil }
-            let live = connected && rows.contains { $0.available != false }
-            let running = live && rows.contains { $0.state == "running" && !$0.needsAttention }
-            let waiting = live && rows.allSatisfy { $0.state == "idle" }
-            let color: NSColor = !live ? .neonMuted : pane.isCritical ? .neonRed : pane.needsAttention ? .neonAmber : waiting ? .neonGreen : running ? .neonAmber : .neonMuted
+            let visualState = pane.visualState(connected: model.isConnected(pane))
+            let live = visualState != .offline
+            let running = visualState == .running
+            let waiting = visualState == .waiting
             if !wasConnected || !previouslyRunning.contains(name) || observingSince[name] == nil { observingSince[name] = now }
             let recentAmount = (outputMarks[name] ?? []).filter { now - $0.time < 1.5 }.reduce(0) { $0 + $1.amount }
             let target = running ? outputLevel(recentAmount) : 0
@@ -121,11 +121,11 @@ final class BubbleView: NSView {
             let recent = rows.min { ($0.activityAge ?? .infinity) < ($1.activityAge ?? .infinity) }
             levels[name] = level
             let background = rows.reduce(0) { $0 + ($1.backgroundCount ?? 0) }
-            let status = !live ? (connectionState == "delayed" ? "等待更新" : "离线") : pane.isCritical ? "异常" : pane.needsAttention ? "待处理" : running ? "运行中" : waiting ? "等待输入" : "待核实"
+            let status = !live ? (connectionState == "delayed" ? "等待更新" : "离线") : visualState == .error ? "异常" : visualState == .attention ? "待处理" : running ? "运行中" : waiting ? "等待输入" : "待核实"
             let summary: String
             if !live {
                 summary = ""
-            } else if pane.needsAttention {
+            } else if [.error, .attention].contains(visualState) {
                 let error = clean(pane.errorSummary ?? "")
                 summary = error.isEmpty ? pane.status : error
             } else if running && background > 0 {
@@ -145,8 +145,7 @@ final class BubbleView: NSView {
             }
             let counts = live && model.settings.showBackgroundCounts ? rows.compactMap(\.backgroundCountsText).joined(separator: " / ") : ""
             let detail = [summary, counts].filter { !$0.isEmpty }.joined(separator: " · ")
-            return Node(key: name, name: pane.orbitName, agent: pane.agent == "claude" ? "Claude" : pane.agent == "codex" ? "Codex" : "CLI", status: status, summary: detail, color: color, live: live, running: running, waiting: waiting,
-                        attention: pane.needsAttention, critical: pane.isCritical, level: level,
+            return Node(key: name, name: pane.orbitName, agent: pane.agent == "claude" ? "Claude" : pane.agent == "codex" ? "Codex" : "CLI", status: status, summary: detail, visualState: visualState, level: level,
                         outputAge: running ? recent?.activityAge : nil, observedFor: now - (observingSince[name] ?? now), source: recent?.activitySource ?? "")
         }
         levels = levels.filter { order.contains($0.key) }
@@ -158,7 +157,9 @@ final class BubbleView: NSView {
         let scaledDiameter = diameter * model.settings.bubbleScale
         if abs(scaledDiameter - lastDiameter) > 0.5 { lastDiameter = scaledDiameter; sizeChanged?(scaledDiameter) }
         setBoundsSize(NSSize(width: diameter, height: diameter))
-        tint = !connected ? .neonMuted : errorCount > 0 ? .neonRed : nodes.contains(where: \.attention) ? .neonAmber : runningCount > 0 ? .neonCyan : waitingCount > 0 ? .neonGreen : .neonMuted
+        let overviewStates = nodes.map(\.visualState) + (connectionState == "partial" ? [.attention] : [])
+        let overall = !connected ? ThemePalette.connection(connected: connected, state: connectionState) : SessionVisualState.mostImportant(overviewStates)
+        tint = ThemePalette.session(overall)
         samples.removeAll { now - $0.time > 60 }
         // The bridge redraws at 10 Hz; the graph records one real sample per second.
         if samples.last.map({ now - $0.time >= 1 }) ?? true {
@@ -278,16 +279,16 @@ final class BubbleView: NSView {
         NSGraphicsContext.saveGraphicsState()
         let shadow = NSShadow(); shadow.shadowColor = tint.withAlphaComponent(0.16)
         shadow.shadowBlurRadius = 8; shadow.shadowOffset = .zero; shadow.set()
-        ThemePalette.base.withAlphaComponent(0.98).setFill(); body.fill()
+        ThemePalette.ns(.base).withAlphaComponent(0.98).setFill(); body.fill()
         NSGraphicsContext.restoreGraphicsState()
-        NSGradient(starting: ThemePalette.surface, ending: ThemePalette.base)?.draw(in: body, angle: -65)
+        NSGradient(starting: ThemePalette.ns(.surface), ending: ThemePalette.ns(.base))?.draw(in: body, angle: -65)
         NSGraphicsContext.saveGraphicsState(); body.addClip()
         let grid = NSBezierPath()
         for x in stride(from: CGFloat(0), through: bounds.width, by: 16) {
             grid.move(to: NSPoint(x: x, y: 0)); grid.line(to: NSPoint(x: x, y: bounds.height))
             grid.move(to: NSPoint(x: 0, y: x)); grid.line(to: NSPoint(x: bounds.width, y: x))
         }
-        NSColor.neonCyan.withAlphaComponent(0.035).setStroke(); grid.lineWidth = 0.4; grid.stroke()
+        ThemePalette.ns(.accent).withAlphaComponent(0.035).setStroke(); grid.lineWidth = 0.4; grid.stroke()
         NSGraphicsContext.restoreGraphicsState()
         tint.withAlphaComponent(0.16).setStroke(); body.lineWidth = 0.6; body.stroke()
         let reducedMotion = reduceMotion || NSWorkspace.shared.accessibilityDisplayShouldReduceMotion
@@ -296,7 +297,7 @@ final class BubbleView: NSView {
             drawWaves(center, ring: ring, inner: ringIndex > 0, now: ProcessInfo.processInfo.systemUptime)
             let radius = ring.radius - 10
             let orbit = NSBezierPath(ovalIn: NSRect(x: center.x - radius, y: center.y - radius, width: radius * 2, height: radius * 2))
-            NSColor.neonCyan.withAlphaComponent(0.13).setStroke(); orbit.lineWidth = 0.6; orbit.stroke()
+            ThemePalette.ns(.accent).withAlphaComponent(0.13).setStroke(); orbit.lineWidth = 0.6; orbit.stroke()
             for (index, nodeIndex) in ring.indices.enumerated() {
                 let node = nodes[nodeIndex]
                 let theta = angle(index, ring)
@@ -307,7 +308,7 @@ final class BubbleView: NSView {
                 let hovered = hoveredName == node.key
                 node.color.withAlphaComponent(hovered ? 0.95 : node.running ? 0.6 : 0.3).setStroke()
                 arc.lineWidth = hovered ? 2 : node.running ? 1.6 : 1; arc.lineCapStyle = .round; arc.stroke()
-                let nameColor: NSColor = !node.live ? .neonMuted : labelColorMode == "status" ? node.color : hovered ? ThemePalette.text : .neonCyan
+                let nameColor = node.color
                 drawArcText(label(node.name), center: center, radius: ring.radius, angle: theta, size: ring.fontSize, color: nameColor)
                 if node.running {
                     let position = point(center, radius, theta)
@@ -322,7 +323,7 @@ final class BubbleView: NSView {
 
     private func drawWaves(_ center: NSPoint, ring: Ring, inner: Bool, now: TimeInterval) {
         guard waveStyle != "off" else { return }
-        let style = waveStyle == "theme" ? (ThemePalette.current == "aurora" ? "curve" : ThemePalette.light ? "dots" : "bars") : waveStyle
+        let style = ThemePalette.waveStyle(waveStyle)
         let radius = ring.radius + (inner ? 9 : 17)
         let span = CGFloat.pi * 2 / CGFloat(max(1, ring.indices.count))
         for (slot, nodeIndex) in ring.indices.enumerated() {
@@ -357,7 +358,7 @@ final class BubbleView: NSView {
                     let path = NSBezierPath()
                     path.move(to: base); path.line(to: tip)
                     color.withAlphaComponent(alpha).setStroke()
-                    path.lineWidth = measured ? (waveStyle == "theme" && ThemePalette.current == "graphite" ? 0.9 : 1.5) : 0.7
+                    path.lineWidth = measured ? ThemePalette.waveLineWidth(waveStyle) : 0.7
                     path.lineCapStyle = .round; path.stroke()
                 }
             }
@@ -383,7 +384,7 @@ final class BubbleView: NSView {
                         right.color.withAlphaComponent(0.09).setFill(); ribbon.fill()
                     }
                     right.color.withAlphaComponent(max(left.alpha, right.alpha)).setStroke()
-                    path.lineWidth = left.measured || right.measured ? 1.4 : 0.7
+                    path.lineWidth = left.measured || right.measured ? ThemePalette.waveLineWidth(waveStyle) : 0.7
                     path.lineCapStyle = .round; path.stroke()
                 }
             }
@@ -398,17 +399,7 @@ final class BubbleView: NSView {
     }
 
     private func waveColor(_ node: Node, fraction: CGFloat) -> NSColor {
-        guard node.live else { return .neonMuted }
-        if node.critical { return .neonRed }
-        if wavePalette == "status" { return node.color }
-        let pair: (NSColor, NSColor)
-        switch wavePalette {
-        case "ice": pair = ThemePalette.light ? (ThemePalette.rgb(0x126EA5), ThemePalette.rgb(0x3558B8)) : (ThemePalette.rgb(0x63E5FF), ThemePalette.rgb(0x7994FF))
-        case "aurora": pair = ThemePalette.light ? (ThemePalette.rgb(0x6949B8), ThemePalette.rgb(0xA4377D)) : (ThemePalette.rgb(0xBD9CFF), ThemePalette.rgb(0xF38AC5))
-        case "ember": pair = ThemePalette.light ? (ThemePalette.rgb(0xA65B00), ThemePalette.rgb(0xC13B32)) : (ThemePalette.rgb(0xFFD187), ThemePalette.rgb(0xFF8B7B))
-        default: pair = (ThemePalette.accent, ThemePalette.violet)
-        }
-        return pair.0.blended(withFraction: min(1, max(0, fraction)), of: pair.1) ?? pair.0
+        ThemePalette.waveColor(state: node.visualState, palette: wavePalette, fraction: fraction)
     }
 
     private func drawHub(_ center: NSPoint, time: CGFloat, reducedMotion: Bool) {
@@ -432,28 +423,30 @@ final class BubbleView: NSView {
         // The hub is always a global overview; hovering an arc only highlights that arc.
         let countSize: CGFloat = max(runningCount, waitingCount) >= 100 ? 22 : 28
         drawText(connected ? "\(runningCount)" : "—", rect: rect(-43, 2, 37, 34), size: countSize * scale,
-                 color: connected ? .neonCyan : .neonMuted)
-        drawText("/", rect: rect(-6, 9, 12, 21), size: 17 * scale, color: .neonMuted)
+                 color: connected ? ThemePalette.ns(.running) : ThemePalette.ns(.offline))
+        drawText("/", rect: rect(-6, 9, 12, 21), size: 17 * scale, color: ThemePalette.ns(.muted))
         drawText(connected ? "\(waitingCount)" : "—", rect: rect(6, 2, 37, 34), size: countSize * scale,
-                 color: connected ? .neonGreen : .neonMuted)
-        drawText("运行", rect: rect(-43, -9, 37, 11), size: 8.2 * scale, color: .neonMuted)
-        drawText("等待", rect: rect(6, -9, 37, 11), size: 8.2 * scale, color: .neonMuted)
+                 color: connected ? ThemePalette.ns(.waiting) : ThemePalette.ns(.offline))
+        drawText("运行", rect: rect(-43, -9, 37, 11), size: 8.2 * scale, color: ThemePalette.ns(.muted))
+        drawText("等待", rect: rect(6, -9, 37, 11), size: 8.2 * scale, color: ThemePalette.ns(.muted))
         var notices: [String] = []
-        if !connected { notices.append(connectionNotice) }
+        if !connected || connectionState == "partial" { notices.append(connectionNotice) }
         if connected && errorCount > 0 { notices.append("异常 \(errorCount)") }
-        if connected && warningCount > 0 { notices.append("待处理 \(warningCount)") }
+        let unknownCount = nodes.filter { $0.visualState == .unknown }.count
+        if connected && errorCount == 0 && warningCount > 0 { notices.append("待处理 \(warningCount)") }
+        if connected && errorCount == 0 && warningCount == 0 && unknownCount > 0 { notices.append("待核实 \(unknownCount)") }
         if !notices.isEmpty {
             drawText(notices.joined(separator: " · "), rect: rect(-42, 34, 84, 10), size: 7.1 * scale,
-                     color: !connected ? (connectionState == "delayed" ? .neonAmber : .neonMuted) : errorCount > 0 ? .neonRed : .neonAmber)
+                     color: !connected ? ThemePalette.session(ThemePalette.connection(connected: connected, state: connectionState)) : errorCount > 0 ? ThemePalette.ns(.error) : connectionState == "partial" || warningCount > 0 ? ThemePalette.ns(.attention) : ThemePalette.ns(.unknown))
         }
         drawChart(in: rect(-35, -30, 70, 13))
-        drawText(connected ? "输出活动 · 60s" : connectionState == "delayed" ? "采样延迟" : "等待连接", rect: rect(-37, -43, 74, 9), size: 6.5 * scale, color: .neonMuted)
+        drawText(connected ? "输出活动 · 60s" : connectionState == "delayed" ? "采样延迟" : "等待连接", rect: rect(-37, -43, 74, 9), size: 6.5 * scale, color: ThemePalette.ns(.muted))
     }
 
     private func drawChart(in rect: NSRect) {
         let baseline = NSBezierPath()
         baseline.move(to: NSPoint(x: rect.minX, y: rect.minY)); baseline.line(to: NSPoint(x: rect.maxX, y: rect.minY))
-        NSColor.neonMuted.withAlphaComponent(0.2).setStroke(); baseline.lineWidth = 0.5; baseline.stroke()
+        ThemePalette.ns(.muted).withAlphaComponent(0.2).setStroke(); baseline.lineWidth = 0.5; baseline.stroke()
         let now = ProcessInfo.processInfo.systemUptime
         var segment: [NSPoint] = []
         var previous: TimeInterval?

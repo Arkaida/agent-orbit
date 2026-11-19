@@ -9,7 +9,7 @@ enum DemoSupport {
         settings.host = "demo-server"; settings.localCodexHome = "/Users/demo/.codex"
         settings.theme = theme; settings.sound = false; settings.reduceMotion = true
         model.settings = settings; model.sound = false
-        ThemePalette.current = theme
+        ThemePalette.configure(theme: theme, statusStyle: settings.orbitLabelColor)
         model.followed = ["atlas", "nova"]
     }
     static func snapshot(_ step: Int) -> Snapshot {

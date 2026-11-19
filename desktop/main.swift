@@ -52,6 +52,9 @@ struct Pane: Decodable, Identifiable {
     }
     var isCritical: Bool { attentionLevel == "error" || ["error", "interrupted", "stopped", "missing"].contains(state) }
     var needsAttention: Bool { isCritical || attentionLevel == "warning" || ["approval", "input", "paused", "unknown"].contains(state) }
+    func visualState(connected: Bool) -> SessionVisualState {
+        SessionVisualState.resolve(state: state, connected: connected, available: available, attentionLevel: attentionLevel)
+    }
     var id: String { paneId }
 }
 
@@ -101,6 +104,7 @@ struct ErrorEvent: Decodable, Identifiable {
     var signature: String?
     var source: String?
     var isCritical: Bool { severity != "warning" }
+    var visualState: SessionVisualState { isCritical ? .error : kind == "unknown" ? .unknown : .attention }
 }
 
 func shellQuote(_ value: String) -> String {
@@ -142,6 +146,13 @@ final class PanelModel: ObservableObject {
     let dataRoot: URL
     var host: String { settings.host.isEmpty ? "本机" : settings.host }
     var socket: String { settings.tmuxSocket }
+    func isConnected(_ pane: Pane) -> Bool {
+        guard connected else { return false }
+        if let source = pane.source, let connection = connections.first(where: { $0.id == source }) {
+            return connection.connected
+        }
+        return connected
+    }
     private var process: Process?
     private var pipe: Pipe?
     private var errorPipe: Pipe?
@@ -158,10 +169,19 @@ final class PanelModel: ObservableObject {
         ["config_error", "monitor_error", "remote_error", "reconnecting", "partial"].contains(connectionState)
     }
     var criticalCount: Int {
-        Set(rows.filter { $0.isCritical && connected && $0.available != false }.map(\.paneId) + unreadErrors.filter { $0.isCritical && !isResolved($0) }.map(\.paneId)).count
+        Set(rows.filter { $0.visualState(connected: isConnected($0)) == .error }.map(\.paneId) + unreadErrors.filter { $0.isCritical && !isResolved($0) }.map(\.paneId)).count
     }
     var warningCount: Int {
-        Set(rows.filter { $0.needsAttention && !$0.isCritical && connected && $0.available != false }.map(\.paneId) + unreadErrors.filter { !$0.isCritical && !isResolved($0) }.map(\.paneId)).count
+        Set(rows.filter { [.attention, .unknown].contains($0.visualState(connected: isConnected($0))) }.map(\.paneId) + unreadErrors.filter { !$0.isCritical && !isResolved($0) }.map(\.paneId)).count
+    }
+    var attentionVisualState: SessionVisualState {
+        let states = rows.map { $0.visualState(connected: isConnected($0)) }.filter { [.error, .attention, .unknown].contains($0) }
+        return .mostImportant(states + unreadErrors.filter { !isResolved($0) }.map(\.visualState))
+    }
+    var visibleCompletions: [Completion] {
+        unread.filter { event in
+            rows.contains { $0.paneId == event.paneId && $0.visualState(connected: isConnected($0)) == .waiting && $0.completionId == event.id }
+        }
     }
 
     func isResolved(_ event: ErrorEvent) -> Bool {
@@ -200,7 +220,7 @@ final class PanelModel: ObservableObject {
         if CommandLine.arguments.contains("--host") { initial.host = argument("--host", fallback: initial.host); initial.remoteEnabled = !initial.host.isEmpty }
         if CommandLine.arguments.contains("--socket") { initial.tmuxSocket = argument("--socket", fallback: initial.tmuxSocket) }
         settings = initial
-        ThemePalette.current = initial.theme
+        ThemePalette.configure(theme: initial.theme, statusStyle: initial.orbitLabelColor)
         sound = initial.sound; pinned = initial.pinned
         try? manager.createDirectory(at: dataRoot, withIntermediateDirectories: true, attributes: [.posixPermissions: 0o700])
         let followURL = dataRoot.appendingPathComponent("follow.json")
@@ -221,7 +241,7 @@ final class PanelModel: ObservableObject {
         let encoded = try value.encoded()
         try saveFollow(follow)
         try encoded.write(to: dataRoot.appendingPathComponent("settings.json"), options: .atomic)
-        ThemePalette.current = value.theme
+        ThemePalette.configure(theme: value.theme, statusStyle: value.orbitLabelColor)
         settings = value; sound = value.sound; pinned = value.pinned
         onUpdate?()
     }
@@ -336,7 +356,7 @@ final class PanelModel: ObservableObject {
             onCompletion?()
         }
         unread.removeAll { event in
-            !rows.contains { $0.paneId == event.paneId && $0.state == "idle" && $0.completionId == event.id }
+            !rows.contains { $0.paneId == event.paneId && $0.visualState(connected: isConnected($0)) == .waiting && $0.completionId == event.id }
         }
         let incomingErrors = (snapshot.errorEvents ?? []).filter { !seenErrors.contains($0.id) }
         for event in incomingErrors { seenErrors.insert(event.id) }
@@ -560,7 +580,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         panel.alphaValue = model.settings.opacity; bubble.alphaValue = model.settings.opacity
         panel.level = model.pinned ? .floating : .normal; bubble.level = model.pinned ? .floating : .normal
         panel.appearance = NSAppearance(named: ThemePalette.light ? .aqua : .darkAqua)
-        let idle = model.rows.filter { $0.state == "idle" && $0.available != false }.count
+        let idle = model.rows.filter { $0.visualState(connected: model.isConnected($0)) == .waiting }.count
         let errors = model.criticalCount
         statusItem.button?.title = !model.connected ? (model.connectionState == "delayed" ? "AO …" : "AO !") : errors > 0 ? "AO !\(errors)" : model.warningCount > 0 ? "AO ?\(model.warningCount)" : "AO \(idle)"
         statusItem.button?.toolTip = !model.connected ? model.message : errors > 0 ? "\(errors) 个异常或中断待查看" : "\(idle) 个会话等待输入"

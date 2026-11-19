@@ -52,5 +52,15 @@ sampling, completion detection or error alerts. A quiet waveform is not proof
 that a task has completed, and its height is not CPU usage, token throughput
 or reasoning efficiency. Turning it off leaves session monitoring active.
 
-Session names follow the selected theme by default. Status arcs and markers
-retain their waiting, running and error colors.
+Names, status text, arcs and markers share one resolved visual state and color.
+The default skin palette defines separate running, waiting, attention, error,
+unknown and offline roles. The classic palette uses orange, green, yellow, red,
+purple and gray respectively, with shades adapted to light and dark surfaces.
+Waveform presets may decorate running and waiting; attention, error, unknown
+and offline states always retain their semantic color.
+
+The existing `orbit_label_color` setting now selects the global status palette:
+`theme` means skin status colors and `status` means classic status colors.
+It no longer makes every session name the same accent color. See
+[color analysis and the shared API](THEMING.md) for resolver precedence,
+component roles and exact RGB values.
