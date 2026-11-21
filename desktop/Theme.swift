@@ -7,6 +7,19 @@ enum ThemeRole: String, CaseIterable {
     case running, waiting, attention, error, unknown, offline
 }
 
+/// Resource channels describe measurements; their colors never select a session state.
+enum ResourceRole: String, CaseIterable {
+    case output, tools, network, memory
+    var title: String {
+        switch self {
+        case .output: return "输出/I/O"
+        case .tools: return "工具"
+        case .network: return "网络"
+        case .memory: return "内存"
+        }
+    }
+}
+
 enum SessionVisualState: String, CaseIterable {
     case running, waiting, attention, error, unknown, offline
 
@@ -60,17 +73,23 @@ struct SkinDefinition {
     let title: String
     let light: Bool
     let tokens: [ThemeRole: UInt32]
+    let resourceTokens: [ResourceRole: UInt32]
     let defaultWaveStyle: String
     let defaultWaveLineWidth: CGFloat
 
     init(id: String, title: String, light: Bool, tokens: [ThemeRole: UInt32],
-         defaultWaveStyle: String, defaultWaveLineWidth: CGFloat = 1.5) {
+         defaultWaveStyle: String, defaultWaveLineWidth: CGFloat = 1.5,
+         resourceTokens: [ResourceRole: UInt32]? = nil) {
         precondition(Set(tokens.keys) == Set(ThemeRole.allCases), "Every skin must define every color role")
         precondition(tokens.values.allSatisfy { $0 <= 0xFFFFFF }, "Skin colors must be RGB tokens")
         self.id = id
         self.title = title
         self.light = light
         self.tokens = tokens
+        self.resourceTokens = resourceTokens ?? [.output: tokens[.accent]!, .tools: tokens[.attention]!,
+                                                  .network: tokens[.secondaryAccent]!, .memory: tokens[.text]!]
+        precondition(Set(self.resourceTokens.keys) == Set(ResourceRole.allCases), "Every skin must define every resource channel")
+        precondition(self.resourceTokens.values.allSatisfy { $0 <= 0xFFFFFF }, "Resource colors must be opaque RGB tokens")
         self.defaultWaveStyle = defaultWaveStyle
         self.defaultWaveLineWidth = defaultWaveLineWidth
     }
@@ -83,7 +102,7 @@ struct SkinDefinition {
             .running: 0x3DD9FF, .waiting: 0x57FFB2,
             .attention: 0xF4CD73, .error: 0xFF708C,
             .unknown: 0xBD9AEF, .offline: 0x7F8EA5
-        ], defaultWaveStyle: "plasma"),
+        ], defaultWaveStyle: "plasma", resourceTokens: [.output: 0x63D9FF, .tools: 0xFFD187, .network: 0xB99CFF, .memory: 0x7CE3C0]),
         SkinDefinition(id: "aurora", title: "极光紫", light: false, tokens: [
             .base: 0x100B20, .surface: 0x20132F,
             .accent: 0xBD9CFF, .secondaryAccent: 0xF38AC5,
@@ -91,7 +110,7 @@ struct SkinDefinition {
             .running: 0xBD9CFF, .waiting: 0x83E7BE,
             .attention: 0xF7CF79, .error: 0xFF8FAE,
             .unknown: 0xCFAC91, .offline: 0xA29AAF
-        ], defaultWaveStyle: "aurora", defaultWaveLineWidth: 1.2),
+        ], defaultWaveStyle: "aurora", defaultWaveLineWidth: 1.2, resourceTokens: [.output: 0x86D6FF, .tools: 0xF3C57D, .network: 0xCE9EFF, .memory: 0x84DBC7]),
         SkinDefinition(id: "graphite", title: "石墨黑", light: false, tokens: [
             .base: 0x101215, .surface: 0x1C2025,
             .accent: 0x88C5D6, .secondaryAccent: 0xC0A9DA,
@@ -99,7 +118,7 @@ struct SkinDefinition {
             .running: 0x88C5D6, .waiting: 0x9CD4B2,
             .attention: 0xE2CB8B, .error: 0xE58D9C,
             .unknown: 0xB9A1CA, .offline: 0x8C96A3
-        ], defaultWaveStyle: "radar", defaultWaveLineWidth: 0.9),
+        ], defaultWaveStyle: "radar", defaultWaveLineWidth: 0.9, resourceTokens: [.output: 0x8FCFE5, .tools: 0xDBC084, .network: 0xC9AEEC, .memory: 0x9ACDBA]),
         SkinDefinition(id: "daylight", title: "晴空浅色", light: true, tokens: [
             .base: 0xEDF2FA, .surface: 0xFFFFFF,
             .accent: 0x136FBA, .secondaryAccent: 0x7856C7,
@@ -107,7 +126,7 @@ struct SkinDefinition {
             .running: 0x136FBA, .waiting: 0x087A4F,
             .attention: 0x8A6600, .error: 0xC52B45,
             .unknown: 0x79559A, .offline: 0x59697D
-        ], defaultWaveStyle: "curve", defaultWaveLineWidth: 1.2)
+        ], defaultWaveStyle: "curve", defaultWaveLineWidth: 1.2, resourceTokens: [.output: 0x136FBA, .tools: 0x946000, .network: 0x7951C2, .memory: 0x24775E])
     ]
 }
 
@@ -183,6 +202,12 @@ struct PaletteResolver {
     func ns(_ role: ThemeRole) -> NSColor { ColorCatalog.color(token(role)) }
     func ui(_ role: ThemeRole) -> Color { Color(nsColor: ns(role)) }
     func session(_ state: SessionVisualState) -> UInt32 { token(state.role) }
+    func resourceToken(_ role: ResourceRole, fraction: CGFloat = 0) -> UInt32 {
+        ColorCatalog.blend(skin.resourceTokens[role]!, token(.text), fraction: min(1, max(0, fraction.isFinite ? fraction : 0)) * 0.12)
+    }
+    func resourceColor(_ role: ResourceRole, fraction: CGFloat = 0) -> NSColor {
+        ColorCatalog.color(resourceToken(role, fraction: fraction))
+    }
 
     func waveStyle(_ requested: String) -> String {
         ["bars", "curve", "dots", "off", "plasma", "aurora", "radar"].contains(requested) ? requested : skin.defaultWaveStyle
@@ -232,6 +257,7 @@ enum ThemePalette {
     static func ns(_ role: ThemeRole) -> NSColor { resolver.ns(role) }
     static func ui(_ role: ThemeRole) -> Color { resolver.ui(role) }
     static func session(_ state: SessionVisualState) -> NSColor { resolver.ns(state.role) }
+    static func resourceColor(_ role: ResourceRole, fraction: CGFloat = 0) -> NSColor { resolver.resourceColor(role, fraction: fraction) }
 
     static func connection(connected: Bool, state: String) -> SessionVisualState {
         switch state {

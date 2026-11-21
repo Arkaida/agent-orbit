@@ -47,6 +47,8 @@ enum DemoSupport {
                 "cached_input_tokens": 35_000 + i * 6_000, "cache_write_input_tokens": 3_200,
                 "consumption_per_second": isRunning ? 31.5 + Double(i * 8) : 0,
                 "upstream_tokens_per_second": isRunning ? 5.8 + Double(i * 2) : 0,
+                "window_tokens": isRunning ? 945 + i * 240 : 0,
+                "window_output_tokens": isRunning ? 174 + i * 60 : 0,
                 "tools_per_minute": isRunning ? 1.0 + Double(i) : 0,
                 "window_seconds": 30, "work_window_seconds": 60
             ]
@@ -84,6 +86,7 @@ enum DemoSupport {
             "output_tokens": usageSum("output_tokens"), "cached_input_tokens": usageSum("cached_input_tokens"),
             "cache_write_input_tokens": usageSum("cache_write_input_tokens"), "consumption_per_second": rate("consumption_per_second"),
             "upstream_tokens_per_second": rate("upstream_tokens_per_second"),
+            "window_tokens": usageSum("window_tokens"), "window_output_tokens": usageSum("window_output_tokens"),
             "tools_per_minute": rate("tools_per_minute"), "live_usage_covered": 3,
             "live_tools_covered": 3, "window_seconds": 30, "work_window_seconds": 60,
             "scope": "followed_root_sessions"
@@ -122,14 +125,16 @@ enum DemoSupport {
                                                               efficiencyPercent: 66.7, reminderSuppressed: true)
                 result.rows[index].usageMetrics?.consumptionPerSecond = 0
                 result.rows[index].usageMetrics?.upstreamTokensPerSecond = 0
+                result.rows[index].usageMetrics?.windowTokens = 0
+                result.rows[index].usageMetrics?.windowOutputTokens = 0
                 result.rows[index].usageMetrics?.toolsPerMinute = 0
             }
             result.rows[index].responseGroup = group
         }
         result.rows = Array(result.rows.prefix(2)); result.followed = ["atlas"]
         result.metrics?.runningSessions = waiting ? 0 : 1
-        result.metrics?.utilizationPercent = waiting ? 0 : 50
-        result.metrics?.knownSessions = 2; result.metrics?.monitoredSessions = 2
+        result.metrics?.utilizationPercent = waiting ? 0 : 100
+        result.metrics?.knownSessions = 1; result.metrics?.monitoredSessions = 1
         result.metrics?.usageSessions = 2; result.metrics?.usageCovered = 2; result.metrics?.toolsCovered = 2
         result.metrics?.liveUsageCovered = 2; result.metrics?.liveToolsCovered = 2
         result.metrics?.inputTokens = result.rows.reduce(0) { $0 + ($1.usageMetrics?.inputTokens ?? 0) }
@@ -139,6 +144,8 @@ enum DemoSupport {
         result.metrics?.cacheWriteInputTokens = result.rows.reduce(0) { $0 + ($1.usageMetrics?.cacheWriteInputTokens ?? 0) }
         result.metrics?.consumptionPerSecond = result.rows.reduce(0) { $0 + ($1.usageMetrics?.consumptionPerSecond ?? 0) }
         result.metrics?.upstreamTokensPerSecond = result.rows.reduce(0) { $0 + ($1.usageMetrics?.upstreamTokensPerSecond ?? 0) }
+        result.metrics?.windowTokens = result.rows.reduce(0) { $0 + ($1.usageMetrics?.windowTokens ?? 0) }
+        result.metrics?.windowOutputTokens = result.rows.reduce(0) { $0 + ($1.usageMetrics?.windowOutputTokens ?? 0) }
         result.metrics?.toolsPerMinute = result.rows.reduce(0) { $0 + ($1.usageMetrics?.toolsPerMinute ?? 0) }
         return result
     }

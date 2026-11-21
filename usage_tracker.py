@@ -29,6 +29,12 @@ def _group(row, source):
     return row.get('group_id') or source + ':' + str(row.get('session', row.get('pane_id', '')))
 
 
+def _response_group(row):
+    group = row.get('response_group')
+    identity = group.get('id') if isinstance(group, dict) else None
+    return identity if isinstance(identity, str) and identity else None
+
+
 def _usage_complete(telemetry):
     return (telemetry.get('usage_available') is True and
             telemetry.get('usage_complete') is True and
@@ -53,6 +59,11 @@ class UsageTracker:
 
     @staticmethod
     def _clear(record, kind):
+        if kind == 'tools':
+            if record['tools_baseline'] is not None or record['tools_current']:
+                record['tools_epoch'] += 1
+            record['active_tools'] = None
+            record['tools_current'] = False
         record[kind + '_baseline'] = None
         record[kind + '_ready'] = False
         record[kind + '_samples'].clear()
@@ -67,6 +78,7 @@ class UsageTracker:
     def _record():
         return dict(tokens=None, tools=None, usage_baseline=None,
                     tools_baseline=None, usage_ready=False, tools_ready=False,
+                    active_tools=None, tools_current=False, tools_epoch=0,
                     usage_samples=deque(), tools_samples=deque(), observed_at=None)
 
     def observe(self, source, rows, now, epoch=0, max_gap_seconds=None):
@@ -98,7 +110,8 @@ class UsageTracker:
             usage = max(choices, key=lambda item: (_usage_complete(item),
                         item.get('total_tokens') if _counter(item.get('total_tokens')) else -1))
             tools = max(choices, key=lambda item: (_tools_complete(item),
-                        item.get('tool_completions') if _counter(item.get('tool_completions')) else -1))
+                        item.get('tool_completions') if _counter(item.get('tool_completions')) else -1,
+                        _counter(item.get('active_tools'))))
             if _usage_complete(usage):
                 values = {field: usage.get(field) if _counter(usage.get(field)) else None
                           for field in TOKEN_FIELDS}
@@ -126,6 +139,8 @@ class UsageTracker:
                     record['tools_ready'] = True
                 record['tools'] = value
                 record['tools_baseline'] = value
+                record['active_tools'] = tools.get('active_tools') if _counter(tools.get('active_tools')) else None
+                record['tools_current'] = True
             else:
                 self._clear(record, 'tools')
             record['observed_at'] = now
@@ -135,7 +150,11 @@ class UsageTracker:
 
         Cumulative coverage includes previously complete cached/offline logs.
         Live coverage requires two continuous, complete collector samples.
-        Unknown roots still occupy one coverage slot per monitored group.
+        Unknown roots still occupy one coverage slot per original session group.
+        Monitoring utilization merges configured response groups across sources;
+        token coverage and counters remain scoped to independent root logs.
+        Window totals and rates sum only live, continuously covered roots;
+        coverage indicators distinguish partial readings from full coverage.
         """
         health = ({connection['id']: connection.get('connected') is True for connection in connections}
                   if connections is not None else {})
@@ -147,24 +166,38 @@ class UsageTracker:
             if (not health.get(source, connections is None) or last is None or
                     now < last or now - last > self.source_gaps.get(source, self.max_gap)):
                 self.break_continuity(source)
-        groups = {}
+        groups, monitoring_groups = {}, {}
         for row in rows:
             source = row.get('source', 'remote')
             groups.setdefault((source, _group(row, source)), []).append(row)
-        targets = {}
+            response_group = _response_group(row)
+            monitor_key = (('response', response_group) if response_group is not None else
+                           ('session', source, _group(row, source)))
+            monitoring_groups.setdefault(monitor_key, []).append(row)
         known = running = 0
-        # Same conservative priority as the visible grouped state. An unknown
-        # or missing pane cannot silently turn its group into a known idle row.
+        # Ordinary multi-pane sessions keep their conservative visual priority.
+        # Explicit response groups are one monitoring slot across all sources;
+        # a waiting/unknown partner must not hide a member that is running.
         priority = {'missing': 0, 'error': 0, 'interrupted': 0, 'stopped': 0,
                     'approval': 1, 'input': 1, 'paused': 1, 'unknown': 2,
                     'running': 3, 'idle': 4}
-        for group_key, members in groups.items():
-            online = [row for row in members if live(row)]
+        response_priority = dict(priority, running=2, unknown=3)
+        for group_key, members in monitoring_groups.items():
+            joint = group_key[0] == 'response'
+            def monitor_live(row):
+                if live(row):
+                    return True
+                # A connected source's explicit error/missing record is an
+                # error in the ring even when that pane is unavailable.
+                return (joint and health.get(row.get('source', 'remote'), connections is None) and
+                        (row.get('attention_level') == 'error' or
+                         row.get('state') in ('missing', 'error', 'interrupted', 'stopped')))
+            online = [row for row in members if monitor_live(row)]
             if online:
                 def state(row):
                     raw = row.get('state', 'unknown')
                     if raw == 'missing':
-                        return raw
+                        return 'error' if joint else raw
                     if row.get('attention_level') == 'error':
                         return 'error'
                     if raw not in priority:
@@ -172,10 +205,21 @@ class UsageTracker:
                     if raw != 'unknown' and row.get('attention_level') == 'warning':
                         return 'approval'
                     return raw
-                selected_state = min((state(row) for row in online), key=lambda value: priority[value])
+                selected_priority = response_priority if joint else priority
+                selected_state = min((state(row) for row in online), key=lambda value: selected_priority[value])
+                if joint and selected_state == 'idle' and (len(online) < len(members) or any(
+                        row['response_group'].get('kind') in ('unknown', 'offline') for row in members)):
+                    # The response tracker also knows configured members that
+                    # have no live row; partial idle is not a confirmed wait.
+                    selected_state = 'unknown'
                 if selected_state not in ('unknown', 'missing'):
                     known += 1
                     running += selected_state == 'running'
+
+        # Token coverage retains its original root-log scope. Joining display
+        # slots never joins ledgers or drops unidentified member coverage slots.
+        targets = {}
+        for group_key, members in groups.items():
             identified = False
             for row in members:
                 identity = _identity(row)
@@ -189,6 +233,7 @@ class UsageTracker:
         covered = tools_covered = live_usage = live_tools = 0
         totals = {field: [] for field in TOKEN_FIELDS}
         consumption = upstream = tool_rate = 0
+        window_tokens = window_output_tokens = 0
         for key, members in targets.items():
             record = self.records.get(key)
             if record is None:
@@ -210,17 +255,23 @@ class UsageTracker:
                 record['tools_samples'].popleft()
             if record['usage_ready']:
                 live_usage += 1
-                consumption += sum(sample[1] for sample in record['usage_samples']) / self.window
-                upstream += sum(sample[2] for sample in record['usage_samples']) / self.window
+                tokens = sum(sample[1] for sample in record['usage_samples'])
+                output_tokens = sum(sample[2] for sample in record['usage_samples'])
+                window_tokens += tokens
+                window_output_tokens += output_tokens
+                consumption += tokens / self.window
+                upstream += output_tokens / self.window
             if record['tools_ready']:
                 live_tools += 1
                 tool_rate += sum(sample[1] for sample in record['tools_samples']) * 60 / self.work_window
         result = dict(scope='followed_root_sessions', window_seconds=self.window,
-                      work_window_seconds=self.work_window, monitored_sessions=len(groups),
+                      work_window_seconds=self.work_window, monitored_sessions=len(monitoring_groups),
                       known_sessions=known, running_sessions=running,
                       utilization_percent=round(running / known * 100, 2) if known else None,
                       usage_sessions=len(targets), usage_covered=covered, tools_covered=tools_covered,
                       live_usage_covered=live_usage, live_tools_covered=live_tools,
+                      window_tokens=window_tokens if live_usage else None,
+                      window_output_tokens=window_output_tokens if live_usage else None,
                       consumption_per_second=round(consumption, 3) if live_usage else None,
                       upstream_tokens_per_second=round(upstream, 3) if live_usage else None,
                       tools_per_minute=round(tool_rate, 3) if live_tools else None)
@@ -235,14 +286,16 @@ class UsageTracker:
 
     def pane_metrics(self, row, now, connections=None):
         """Read one pane's own root log without advancing counters/baselines."""
-        result = dict(scope='root_session', window_seconds=self.window,
+        identity = _identity(row)
+        result = dict(scope='root_session', root_identity=identity, window_seconds=self.window,
                       work_window_seconds=self.work_window, usage_sessions=1,
                       usage_covered=0, tools_covered=0, live_usage_covered=0,
                       live_tools_covered=0, consumption_per_second=None,
-                      upstream_tokens_per_second=None, tools_per_minute=None)
+                      upstream_tokens_per_second=None, tools_per_minute=None,
+                      window_tokens=None, window_output_tokens=None,
+                      tool_completions=None, active_tools=None, tools_epoch=None)
         result.update((field, None) for field in TOKEN_FIELDS)
         source = row.get('source', 'remote')
-        identity = _identity(row)
         record = self.records.get((source, identity)) if identity is not None else None
         if record is None:
             return result
@@ -251,6 +304,8 @@ class UsageTracker:
             result['usage_covered'] = 1
         if record['tools'] is not None:
             result['tools_covered'] = 1
+            result['tool_completions'] = record['tools']
+        result['tools_epoch'] = record['tools_epoch']
         health = ({connection['id']: connection.get('connected') is True for connection in connections}
                   if connections is not None else {})
         sampled_at = self.source_samples.get(source)
@@ -259,11 +314,16 @@ class UsageTracker:
                 0 <= now - sampled_at <= self.source_gaps.get(source, self.max_gap))
         if not live:
             return result
+        if record['tools_current']:
+            result['active_tools'] = record['active_tools']
         if record['usage_ready']:
             samples = [sample for sample in record['usage_samples'] if now - self.window < sample[0] <= now]
+            tokens = sum(sample[1] for sample in samples)
+            output_tokens = sum(sample[2] for sample in samples)
             result.update(live_usage_covered=1,
-                          consumption_per_second=round(sum(sample[1] for sample in samples) / self.window, 3),
-                          upstream_tokens_per_second=round(sum(sample[2] for sample in samples) / self.window, 3))
+                          window_tokens=tokens, window_output_tokens=output_tokens,
+                          consumption_per_second=round(tokens / self.window, 3),
+                          upstream_tokens_per_second=round(output_tokens / self.window, 3))
         if record['tools_ready']:
             samples = [sample for sample in record['tools_samples'] if now - self.work_window < sample[0] <= now]
             result.update(live_tools_covered=1,

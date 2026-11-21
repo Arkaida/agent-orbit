@@ -7,6 +7,25 @@ UI and precisely associated root logs provide the evidence. Errors and
 approvals take precedence over input readiness. Claude completion also
 checks the foreground lifecycle and explicit child/workflow activity.
 
+Claude foreground state is reduced from ordered root-log lifecycle records.
+A bounded tail read sees recent records independently of the slower background
+history reconstruction; older file offsets cannot overwrite a newer completion.
+`turn_duration`, or a non-empty text answer with `stop_reason=end_turn`, closes
+the foreground turn. A thinking-only `end_turn` fragment does not. A later
+main request or real user input starts the next turn. Verified completion can
+correct a stale terminal spinner; pending background reconstruction remains
+unconfirmed, and a verified active child still keeps the session running.
+
+Claude asynchronous Agent/Task results may declare `isAsync=true` or
+`status=async_launched` even when the original tool input omits
+`run_in_background`. These launches remain active after the foreground answer
+and are cleared by their matching terminal notification or stop result. Online
+agent totals and persistent shell handles still do not imply active work.
+The current input area's `* Waiting for N background agent(s) to finish`
+status also keeps unfinished children running, including while log history is
+being checked. Quoted text, old prompts and scrollback do not count as this
+live status. Matching UI and log counts use the maximum rather than being added.
+
 After observed work, an input-ready page must remain stable for two seconds;
 new prose resets confirmation. The completion notifier adds a one-second
 debounce. An active spinner, pending main request or verified executing child
@@ -46,11 +65,19 @@ The diagnostic log contains connection metadata, not conversation bodies.
 
 ## Activity visualization
 
-The floating ring's waveform uses recent output or log changes. Its style,
-palette, height and density change only the presentation; they do not change
-sampling, completion detection or error alerts. A quiet waveform is not proof
-that a task has completed, and its height is not CPU usage, token throughput
+The floating ring's waveform shows recent output and resource changes only for
+sessions currently confirmed as running. Waiting, attention, error, unknown and
+offline nodes clear their activity history; resuming establishes a new baseline.
+Only working members contribute to a group's activity. Resource channels share
+one circular baseline and overlap in different skin colors rather than occupying
+concentric bands. Its style, palette, height and density change the presentation;
+they do not change completion detection or error alerts. A quiet waveform is not
+proof that a task has completed, and its height is not CPU usage, token throughput
 or reasoning efficiency. Turning it off leaves session monitoring active.
+
+A thin two-color arc beside each name shows the accumulated observed idle/run
+ratio. Exact durations remain in the hover description and accessibility text;
+missing or zero totals use a neutral track rather than an invented ratio.
 
 Names, status text, arcs and markers share one resolved visual state and color.
 The default skin palette defines separate running, waiting, attention, error,

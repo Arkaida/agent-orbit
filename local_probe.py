@@ -12,6 +12,7 @@ import sys
 import time
 
 from remote_probe import EMPTY_ISSUE, UsageLogWatcher, detect_failure, issue
+from resource_probe import AsyncProcessResources
 
 LIFECYCLE = frozenset(('task_started', 'turn_started', 'task_complete', 'turn_complete',
                        'turn_aborted', 'turn_failed', 'error', 'stream_error'))
@@ -56,6 +57,8 @@ class LocalCollector:
         self.limit, self.runner = limit, runner
         self.files, self.discovery = {}, []
         self.usage = UsageLogWatcher()
+        self.resources = AsyncProcessResources()
+        self.processes = {}
         self.next_discovery = 0
 
     def discover(self):
@@ -63,8 +66,14 @@ class LocalCollector:
         if result.returncode:
             raise RuntimeError('无法读取本机进程，请检查系统权限')
         pids = []
+        self.processes = {}
         for line in result.stdout.splitlines():
             parts = line.split(None, 3)
+            if len(parts) == 4:
+                try:
+                    self.processes[int(parts[0])] = (int(parts[1]), parts[2], parts[3])
+                except ValueError:
+                    continue
             if len(parts) == 4 and os.path.basename(parts[3]) in ('codex', 'codex-app-server') and 'Z' not in parts[2]:
                 pids.append(parts[0])
         if not pids:
@@ -189,6 +198,19 @@ class LocalCollector:
                              lifecycle_cursor=dict(path=str(session['path']), device=state['identity'][0], inode=state['identity'][1], offset=state['offset']),
                              telemetry=self.usage.sample(session['path'], 'codex'),
                              **state['failure']))
+        samples = self.resources.sample_all([row['process_id'] for row in rows], self.processes)
+        owners = {}
+        for sid, session in self.discovery:
+            owners.setdefault(session['pid'], set()).add(sid)
+        for row in rows:
+            value = samples.get(row['process_id'])
+            if value is not None:
+                value = dict(value)
+                shared = len(owners.get(row['process_id'], ()))
+                process_name = os.path.basename(self.processes.get(row['process_id'], (0, '', ''))[2])
+                if shared > 1 or process_name == 'codex-app-server':
+                    value.update(scope='shared_process', shared_sessions=shared)
+            row['resources'] = value
         return dict(panes=rows, sampled_at=time.time(), collection_ms=round((time.monotonic() - started) * 1000))
 
 

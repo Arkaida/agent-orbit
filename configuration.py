@@ -27,7 +27,7 @@ def defaults(root=None):
                 local_codex_home=os.environ.get('CODEX_HOME', str(Path.home() / '.codex')),
                 local_limit=16, local_followed=[], interval=.5, theme='neon',
                 orbit_label_color='theme', wave_style='theme', wave_palette='theme',
-                wave_height=1.3, wave_density=1.0, pinned=True,
+                wave_height=1.3, wave_density=1.0, wave_resources=True, wave_sensitivity=1.0, pinned=True,
                 sound=True, completion_sound=True, error_sound=True,
                 wait_reminder_enabled=True, wait_reminder_minutes=5, wait_reminder_sound=True, show_previews=True,
                 show_background_counts=True, bubble_scale=.85, opacity=1.0,
@@ -38,7 +38,7 @@ def validate(settings):
     result = dict(settings)
     for key in ('remote_enabled', 'local_enabled', 'pinned', 'sound', 'completion_sound',
                 'error_sound', 'wait_reminder_enabled', 'wait_reminder_sound',
-                'show_previews', 'show_background_counts', 'reduce_motion', 'launch_compact'):
+                'show_previews', 'show_background_counts', 'reduce_motion', 'launch_compact', 'wave_resources'):
         if type(result.get(key)) is not bool:
             raise ValueError(key + ' 必须是开关值')
     if not result['remote_enabled'] and not result['local_enabled']:
@@ -54,7 +54,7 @@ def validate(settings):
     if not result['local_codex_home'].strip():
         raise ValueError('请填写本机 Codex 数据目录')
     for key, low, high in [('interval', .25, 5), ('bubble_scale', .7, 1.5), ('opacity', .65, 1), ('local_limit', 1, 64),
-                           ('wave_height', .5, 1.5), ('wave_density', .6, 1.6), ('wait_reminder_minutes', 1, 120)]:
+                           ('wave_height', .5, 1.5), ('wave_density', .6, 1.6), ('wave_sensitivity', .6, 1.8), ('wait_reminder_minutes', 1, 120)]:
         value = result.get(key)
         if isinstance(value, bool) or not isinstance(value, (int, float)) or not low <= value <= high:
             raise ValueError('{} 需要在 {}–{} 之间'.format(key, low, high))

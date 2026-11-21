@@ -164,6 +164,16 @@ class ReminderTests(unittest.TestCase):
 
 
 class LifecycleTests(unittest.TestCase):
+    def test_claude_final_text_end_turn_is_lifecycle_but_thinking_only_is_not(self):
+        watcher = ClaudeWatcher()
+        thinking = dict(type='assistant', message=dict(stop_reason='end_turn', content=[dict(type='thinking', thinking='hidden')]))
+        final = dict(type='assistant', message=dict(stop_reason='end_turn', content=[dict(type='text', text='Synthetic final')]))
+        self.assertIsNone(watcher.decode(thinking))
+        self.assertEqual(watcher.decode(final), ('turn_complete', '', ''))
+        self.assertIsNone(watcher.decode(dict(final, isSidechain=True)))
+        self.assertIsNone(watcher.decode(dict(type='api-request', querySource='prompt_suggestion')))
+        self.assertEqual(watcher.decode(dict(type='api-request', querySource='repl_main_thread')), ('turn_started', '', ''))
+
     def test_claude_incremental_events_skip_history_and_resume(self):
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / 'session.jsonl'

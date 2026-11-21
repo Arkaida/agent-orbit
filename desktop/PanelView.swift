@@ -62,11 +62,11 @@ struct UsageMetricCell: View {
     var role: ThemeRole = .accent
     var body: some View {
         VStack(alignment: .leading, spacing: 3) {
-            Text(label).font(.system(size: 8.5)).foregroundColor(ThemePalette.ui(.muted))
+            Text(label).font(.system(size: 10)).foregroundColor(ThemePalette.ui(.muted))
             HStack(alignment: .firstTextBaseline, spacing: 4) {
                 Text(value).font(.system(size: 14, weight: .medium, design: .monospaced)).monospacedDigit()
                     .foregroundColor(ThemePalette.ui(value == "—" ? .muted : role))
-                Text(unit).font(.system(size: 8, design: .monospaced)).foregroundColor(ThemePalette.ui(.muted))
+                Text(unit).font(.system(size: 9, design: .monospaced)).foregroundColor(ThemePalette.ui(.muted))
             }.lineLimit(1).minimumScaleFactor(0.8)
         }.frame(maxWidth: .infinity, alignment: .leading)
     }
@@ -88,7 +88,7 @@ struct UsageOverview: View {
                         Text(connected ? metrics?.utilizationText ?? "—" : "—")
                             .font(.system(size: 11, weight: .medium, design: .monospaced)).monospacedDigit()
                             .foregroundColor(ThemePalette.ui(connected ? .running : .offline))
-                        Text(connected && metrics != nil ? "\(metrics?.runningSessions ?? 0)/\(metrics?.knownSessions ?? 0) 会话" : "—/— 会话")
+                        Text(connected && metrics != nil ? "\(metrics?.runningSessions ?? 0)/\(metrics?.knownSessions ?? 0) 位置" : "—/— 位置")
                             .font(.system(size: 8)).foregroundColor(ThemePalette.ui(.muted))
                         Spacer(minLength: 0)
                     }.contentShape(Rectangle())
@@ -100,9 +100,16 @@ struct UsageOverview: View {
                     .popover(isPresented: $showDetails, arrowEdge: .bottom) { details }
             }
             if expanded {
+                HStack(alignment: .firstTextBaseline) {
+                    Text("近 \(metrics?.windowSeconds ?? 30) 秒新增" + (metrics?.liveUsageIsPartial == true ? " · 部分" : ""))
+                        .font(.system(size: 10)).foregroundColor(ThemePalette.ui(.muted))
+                    Spacer(minLength: 4)
+                    Text(windowTokenText).font(.system(size: 13, weight: .semibold, design: .monospaced)).monospacedDigit()
+                        .foregroundColor(ThemePalette.ui(connected && metrics?.windowTokens != nil ? .accent : .muted))
+                }.lineLimit(1).minimumScaleFactor(0.9)
                 HStack(spacing: 10) {
                     UsageMetricCell(label: "实时消耗" + (metrics?.liveUsageIsPartial == true ? " · 部分" : ""), value: metrics?.liveRate(metrics?.consumptionPerSecond, connected: connected) ?? "—", unit: "tok/s")
-                    UsageMetricCell(label: "总消耗" + (metrics?.usageIsPartial == true ? " · 部分" : ""), value: UsageMetrics.amount(metrics?.totalTokens), unit: "tok", role: connected ? .text : .muted)
+                    UsageMetricCell(label: "总消耗" + (metrics?.usageIsPartial == true ? " · 部分" : ""), value: UsageMetrics.exactAmount(metrics?.totalTokens), unit: "tok", role: connected ? .text : .muted)
                 }
                 HStack(spacing: 10) {
                     UsageMetricCell(label: "上游速度" + (metrics?.liveUsageIsPartial == true ? " · 部分" : ""), value: metrics?.liveRate(metrics?.upstreamTokensPerSecond, connected: connected) ?? "—", unit: "输出 tok/s", role: .secondaryAccent)
@@ -119,12 +126,17 @@ struct UsageOverview: View {
             .overlay(RoundedRectangle(cornerRadius: 9).stroke(ThemePalette.ui(.accent).opacity(0.13), lineWidth: 0.7))
             .accessibilityElement(children: .contain)
     }
+    var windowTokenText: String {
+        let amount = metrics?.liveWindowTokens(connected: connected) ?? "—"
+        return (amount == "—" ? amount : "+" + amount) + " tok"
+    }
     var details: some View {
         VStack(alignment: .leading, spacing: 8) {
             Text("关注会话 · 用量总览").font(.system(size: 12, weight: .semibold))
             VStack(alignment: .leading, spacing: 4) {
                 detailValue("实时消耗", metrics?.liveRate(metrics?.consumptionPerSecond, connected: connected) ?? "—", "tok/s")
-                detailValue("总消耗", UsageMetrics.amount(metrics?.totalTokens), "tok")
+                detailValue("近 \(metrics?.windowSeconds ?? 30) 秒新增", metrics?.liveWindowTokens(connected: connected) ?? "—", "tok")
+                detailValue("总消耗", UsageMetrics.exactAmount(metrics?.totalTokens), "tok")
                 detailValue("上游输出", metrics?.liveRate(metrics?.upstreamTokensPerSecond, connected: connected) ?? "—", "tok/s")
                 detailValue("工作速度", metrics?.liveRate(metrics?.toolsPerMinute, connected: connected) ?? "—", "工具次/min")
             }.font(.system(size: 10, design: .monospaced))
@@ -136,15 +148,15 @@ struct UsageOverview: View {
                 detailLine("缓存写入", metrics?.cacheWriteInputTokens)
             }.font(.system(size: 10, design: .monospaced))
             Text("输入已包含缓存读取与缓存写入；缓存是输入的细分，不再重复相加。总消耗＝输入＋输出。Token 不等于费用。")
-            Text("实时消耗与上游速度：近 \(metrics?.windowSeconds ?? 30) 秒已记录的 Token 增量除以该窗口时长。Claude 通常在响应结束后写入用量，因此是日志结算速度。工作速度：近 \(metrics?.workWindowSeconds ?? 60) 秒工具结果次数，不代表任务完成率。")
+            Text("新增量是近 \(metrics?.windowSeconds ?? 30) 秒真实采集到的 Token 整数增量；首次连接先建立基准，不把历史消耗计为新增。实时消耗与上游速度：该窗口的消耗与输出增量除以窗口时长。Claude 通常在响应结束后写入用量，因此是日志结算速度。工作速度：近 \(metrics?.workWindowSeconds ?? 60) 秒工具结果次数，不代表任务完成率。")
             Text("覆盖：用量 \(metrics?.usageCoverageText ?? "0/0")，工具 \(metrics?.workCoverageText ?? "0/0")。实时覆盖：用量 \(connected ? metrics?.liveUsageCovered ?? 0 : 0)/\(metrics?.usageSessions ?? 0)，工具 \(connected ? metrics?.liveToolsCovered ?? 0 : 0)/\(metrics?.usageSessions ?? 0)。离线保留累计，速率显示 —；部分在线只统计已覆盖的在线部分。")
-            Text("运行率已确认 \(metrics?.knownSessions ?? 0)/\(metrics?.monitoredSessions ?? 0) 个关注会话；离线或状态未知的会话不计入分母。")
+            Text("运行率已确认 \(metrics?.knownSessions ?? 0)/\(metrics?.monitoredSessions ?? 0) 个监控位置；一个会话组占一个位置，离线或状态未知的位置不计入分母。")
         }.font(.system(size: 10)).foregroundColor(ThemePalette.ui(.text))
             .fixedSize(horizontal: false, vertical: true).padding(14).frame(width: 290)
             .background(ThemePalette.ui(.surface)).preferredColorScheme(ThemePalette.scheme)
     }
     func detailLine(_ label: String, _ value: Int?) -> some View {
-        detailValue(label, UsageMetrics.amount(value), "tok")
+        detailValue(label, UsageMetrics.exactAmount(value), "tok")
     }
     func detailValue(_ label: String, _ value: String, _ unit: String) -> some View {
         HStack { Text(label); Spacer(); Text(value + " " + unit) }
@@ -200,7 +212,7 @@ struct PaneCard: View {
     }
     var usageHelp: String {
         guard let usage = pane.usageMetrics else { return "本会话的 CLI 用量暂不可用。" }
-        return "本会话主日志：累计 " + UsageMetrics.amount(usage.totalTokens) + " tok；输入 " + UsageMetrics.amount(usage.inputTokens) + "、输出 " + UsageMetrics.amount(usage.outputTokens) + "。实时消耗 " + usage.liveRate(usage.consumptionPerSecond, connected: hasFreshData) + " tok/s。上游输出为近 \(usage.windowSeconds ?? 30) 秒已记录 Token 均速，工具为近 \(usage.workWindowSeconds ?? 60) 秒结果次数；Claude 常在响应结束后结算，不等于持续生成速度。"
+        return "主日志：累计 " + UsageMetrics.exactAmount(usage.totalTokens) + " tok；输入 " + UsageMetrics.exactAmount(usage.inputTokens) + "、输出 " + UsageMetrics.exactAmount(usage.outputTokens) + "。近 \(usage.windowSeconds ?? 30) 秒新增 " + usage.liveWindowTokens(connected: hasFreshData) + " tok，实时消耗 " + usage.liveRate(usage.consumptionPerSecond, connected: hasFreshData) + " tok/s。用量覆盖 \(usage.usageCoverageText)，实时用量 \(hasFreshData ? usage.liveUsageCovered ?? 0 : 0)/\(usage.usageSessions ?? 0)，实时工具 \(hasFreshData ? usage.liveToolsCovered ?? 0 : 0)/\(usage.usageSessions ?? 0)；部分表示只合计已核实成员。上游输出为近 \(usage.windowSeconds ?? 30) 秒已记录 Token 均速，工具为近 \(usage.workWindowSeconds ?? 60) 秒结果次数；Claude 常在响应结束后结算，不等于持续生成速度。"
     }
     @ViewBuilder var responseLine: some View {
         if let response = response, !responseLabel.isEmpty {
@@ -221,22 +233,34 @@ struct PaneCard: View {
                     }.buttonStyle(.plain).accessibilityLabel(snoozed ? "已稍后提醒" : "稍后提醒这个会话")
                         .help(snoozed ? "已暂缓一次提醒，等待时长继续累计。" : "稍后再提醒，不会将会话标为已回答。")
                 }
-            }.font(.system(size: 9)).foregroundColor(responseColor)
+            }.font(.system(size: 10.5)).foregroundColor(responseColor)
                 .help(response.observed ? "从本次连续观察到这个状态时开始计时；首次连接无法确认实际开始时间，因此显示观察到的下限。只有 CLI 恢复工作才结束等待。" : "从确认本轮完成并等待输入时开始计时。打开或暂缓提醒不会假定你已经回答。")
         }
     }
     var efficiencyLine: some View {
+        VStack(alignment: .leading, spacing: 3) {
+            HStack(alignment: .firstTextBaseline, spacing: 4) {
+                let amount = pane.usageMetrics?.liveWindowTokens(connected: hasFreshData) ?? "—"
+                Text("\(pane.usageMetrics?.windowSeconds ?? 30)s " + (amount == "—" ? amount : "+" + amount) + " tok" + (pane.usageMetrics?.liveUsageIsPartial == true ? " · 部分" : ""))
+                    .font(.system(size: 11.5, weight: .semibold, design: .monospaced)).monospacedDigit()
+                    .foregroundColor(ThemePalette.ui(hasFreshData && pane.usageMetrics?.windowTokens != nil ? .accent : .muted))
+                Spacer(minLength: 2)
+                Button(action: open) { Image(systemName: "arrow.up.right") }
+                    .buttonStyle(NeonIconStyle(size: 20)).accessibilityLabel(pane.source == "local" ? "打开 Codex 应用" : "进入远端会话")
+                    .help(pane.source == "local" ? "打开 Codex 应用查看本机会话" : "进入这个远端会话").disabled(!isAvailable || pane.state == "missing")
+            }.lineLimit(1).minimumScaleFactor(0.9)
+            Text("累计 " + UsageMetrics.exactAmount(pane.usageMetrics?.totalTokens) + " tok" + (pane.usageMetrics?.usageIsPartial == true ? " · 部分" : ""))
+                .font(.system(size: 10.5, weight: .medium, design: .monospaced)).monospacedDigit()
+                .foregroundColor(ThemePalette.ui(hasFreshData ? .text : .muted)).lineLimit(1).minimumScaleFactor(0.9)
         HStack(spacing: 5) {
-            Text("↑ " + (pane.usageMetrics?.liveRate(pane.usageMetrics?.upstreamTokensPerSecond, connected: hasFreshData) ?? "—") + " tok/s")
+            Text("↑ " + (pane.usageMetrics?.liveRate(pane.usageMetrics?.upstreamTokensPerSecond, connected: hasFreshData) ?? "—") + " tok/s" + (pane.usageMetrics?.liveUsageIsPartial == true ? "*" : ""))
                 .foregroundColor(ThemePalette.ui(hasFreshData ? .accent : .muted))
             Text("·").foregroundColor(ThemePalette.ui(.muted))
-            Text("工具 " + (pane.usageMetrics?.liveRate(pane.usageMetrics?.toolsPerMinute, connected: hasFreshData) ?? "—") + "/min")
+            Text("工具 " + (pane.usageMetrics?.liveRate(pane.usageMetrics?.toolsPerMinute, connected: hasFreshData) ?? "—") + "/min" + (pane.usageMetrics?.liveWorkIsPartial == true ? "*" : ""))
                 .foregroundColor(ThemePalette.ui(hasFreshData ? .secondaryAccent : .muted))
             Spacer(minLength: 0)
-            Button(action: open) { Image(systemName: "arrow.up.right") }
-                .buttonStyle(NeonIconStyle(size: 20)).accessibilityLabel(pane.source == "local" ? "打开 Codex 应用" : "进入远端会话")
-                .help(pane.source == "local" ? "打开 Codex 应用查看本机会话" : "进入这个远端会话").disabled(!isAvailable || pane.state == "missing")
-        }.font(.system(size: 9, design: .monospaced)).lineLimit(1).minimumScaleFactor(0.85).help(usageHelp)
+        }.font(.system(size: 10, design: .monospaced)).lineLimit(1).minimumScaleFactor(0.9)
+        }.help(usageHelp)
     }
     var observationSummary: String? {
         guard let response = effectiveResponse, response.idleSeconds != nil || response.runSeconds != nil else {
@@ -249,7 +273,7 @@ struct PaneCard: View {
         if let value = response.efficiencyPercent, value.isFinite {
             efficiency = String(format: "%.0f%%", max(0, min(100, value)))
         } else { efficiency = "—" }
-        return name + "闲" + idle + "/跑" + run + " · 运行占比" + efficiency
+        return name + "闲置" + idle + "/运行" + run + " · 占比" + efficiency
     }
     var observationHelp: String {
         var parts: [String] = []
@@ -263,8 +287,8 @@ struct PaneCard: View {
     }
     @ViewBuilder var observationLine: some View {
         if let summary = observationSummary {
-            Text(summary).font(.system(size: 8)).foregroundColor(ThemePalette.ui(.muted))
-                .lineLimit(1).minimumScaleFactor(0.8).help(observationHelp)
+            Text(summary).font(.system(size: 10.5)).foregroundColor(ThemePalette.ui(.muted))
+                .lineLimit(2).help(observationHelp)
         }
     }
     @ViewBuilder var details: some View {
@@ -423,10 +447,51 @@ struct FollowTextEditor: NSViewRepresentable {
     }
 }
 
+struct SessionUnitCard: View {
+    let unit: SessionUnit
+    @ObservedObject var model: PanelModel
+    var showDetails: Bool
+    @State private var expanded = false
+    var body: some View {
+        VStack(spacing: 5) {
+            if let pane = unit.summaryPane(connected: model.isConnected) {
+                let connected = unit.rows.contains { model.isConnected($0) }
+                PaneCard(pane: pane, alert: unit.rows.contains { row in model.unread.contains { $0.paneId == row.paneId } }, connected: connected,
+                         open: { if unit.isGroup { expanded.toggle() } else if let member = unit.rows.first { model.open(member) } },
+                         showPreviews: showDetails && model.settings.showPreviews && !unit.isGroup,
+                         showBackgroundCounts: showDetails && model.settings.showBackgroundCounts && !unit.isGroup,
+                         snooze: model.settings.waitReminderEnabled ? { model.snooze(pane) } : nil,
+                         snoozed: model.reminderIsSnoozed(pane), reminderOpened: model.reminderWasOpened(pane))
+                if unit.isGroup {
+                    Button { expanded.toggle() } label: {
+                        HStack(spacing: 4) {
+                            Image(systemName: expanded ? "chevron.up" : "chevron.down")
+                            Text(expanded ? "收起成员" : "展开 \(unit.rows.count) 个成员")
+                            Spacer(minLength: 0)
+                            Text("共享闲置 / 运行")
+                        }.font(.system(size: 9.5)).foregroundColor(ThemePalette.ui(.muted)).contentShape(Rectangle())
+                    }.buttonStyle(.plain).padding(.horizontal, 10).padding(.vertical, 3)
+                        .accessibilityLabel(expanded ? "收起会话组成员" : "展开会话组成员")
+                }
+            }
+            if unit.isGroup && expanded {
+                ForEach(unit.rows) { pane in
+                    PaneCard(pane: pane, alert: model.unread.contains { $0.paneId == pane.paneId }, connected: model.isConnected(pane),
+                             open: { model.open(pane) }, showPreviews: showDetails && model.settings.showPreviews,
+                             showBackgroundCounts: showDetails && model.settings.showBackgroundCounts,
+                             snooze: model.settings.waitReminderEnabled ? { model.snooze(pane) } : nil,
+                             snoozed: model.reminderIsSnoozed(pane), reminderOpened: model.reminderWasOpened(pane))
+                }.padding(.leading, 8)
+            }
+        }
+    }
+}
+
 struct PanelView: View {
     @ObservedObject var model: PanelModel
+    var units: [SessionUnit] { SessionUnit.collect(model.displayRows) }
     var visualStates: [SessionVisualState] {
-        model.rows.map { $0.visualState(connected: model.isConnected($0)) }
+        units.map { $0.visualState(connected: model.isConnected) }
     }
     var hasLiveSessionData: Bool {
         model.connected || visualStates.contains { $0.role != .offline }
@@ -466,7 +531,7 @@ struct PanelView: View {
             HStack(spacing: 7) {
                 StatusMetric(value: hasLiveSessionData ? "\(visualStates.filter { $0.role == .waiting }.count)" : "—", label: "等待", color: hasLiveSessionData ? ThemePalette.ui(.waiting) : ThemePalette.ui(.offline))
                 StatusMetric(value: hasLiveSessionData ? "\(visualStates.filter { $0.role == .running }.count)" : "—", label: "运行", color: hasLiveSessionData ? ThemePalette.ui(.running) : ThemePalette.ui(.offline))
-                StatusMetric(value: "\(model.criticalCount + model.warningCount)", label: "待处理", color: ThemePalette.ui(model.attentionVisualState.role))
+                StatusMetric(value: "\(visualStates.filter { [.error, .attention, .unknown].contains($0) }.count)", label: "待处理", color: ThemePalette.ui(model.attentionVisualState.role))
             }
             HStack(spacing: 5) {
                 Circle().fill(connectionColor).frame(width: 4, height: 4)
@@ -518,10 +583,8 @@ struct PanelView: View {
                             }
                         }.frame(maxWidth: .infinity).padding(.vertical, 55)
                     }
-                    ForEach(model.displayRows) { pane in
-                        PaneCard(pane: pane, alert: model.unread.contains { $0.paneId == pane.paneId }, connected: model.isConnected(pane), open: { model.open(pane) }, showPreviews: model.settings.showPreviews && geometry.size.height >= 330, showBackgroundCounts: model.settings.showBackgroundCounts && geometry.size.height >= 330,
-                                 snooze: model.settings.waitReminderEnabled ? { model.snooze(pane) } : nil,
-                                 snoozed: model.reminderIsSnoozed(pane), reminderOpened: model.reminderWasOpened(pane))
+                    ForEach(units) { unit in
+                        SessionUnitCard(unit: unit, model: model, showDetails: geometry.size.height >= 330)
                     }
                 }.padding(9)
             }
@@ -530,7 +593,7 @@ struct PanelView: View {
                 Image(systemName: "cursorarrow").font(.system(size: 8))
                 Text("双击查看会话")
                 Spacer()
-                Text("\(model.rows.count) 个会话").monospacedDigit()
+                Text("\(units.count) 个位置 · \(model.rows.count) 个会话").monospacedDigit()
             }.font(.system(size: 9)).foregroundColor(ThemePalette.ui(.muted)).padding(.horizontal, 12).padding(.vertical, 7)
         }
         }

@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 """Build explicit-allowlist archives, never personal config or diagnostics."""
+import argparse
 import hashlib
 from pathlib import Path
 import platform
@@ -10,6 +11,9 @@ import subprocess
 import zipfile
 
 ROOT = Path(__file__).resolve().parents[1]
+parser = argparse.ArgumentParser(description=__doc__)
+parser.add_argument('--include-demo', action='store_true', help='also attach the existing demo video')
+options = parser.parse_args()
 APP = ROOT / 'Agent Orbit.app'
 with (ROOT / 'desktop/Info.plist').open('rb') as file:
     source_info = plistlib.load(file)
@@ -32,7 +36,7 @@ files = [ROOT / name for name in ('agent-orbit', 'codex-remote', 'shortcuts.zsh'
                                  'README.md', 'LICENSE', 'THIRD_PARTY_NOTICES.md', 'CONTRIBUTING.md', 'OPEN_SOURCE_RESEARCH.md',
                                  '.gitignore', 'settings.example.json')]
 files += [ROOT / name for name in ('agent_orbit_cli.py', 'configuration.py', 'local_probe.py', 'remote_probe.py', 'monitor.py',
-                                 'desktop_bridge.py', 'desktop_launch.py', 'completion_tracker.py', 'response_tracker.py',
+                                 'desktop_bridge.py', 'desktop_launch.py', 'completion_tracker.py', 'response_tracker.py', 'resource_probe.py', 'remote_bundle.py',
                                  'activity_tracker.py', 'usage_tracker.py', 'error_tracker.py')]
 files += sorted(ROOT.glob('test_*.py'))
 for folder in ('desktop', 'docs', 'scripts', '.github'):
@@ -44,10 +48,13 @@ with zipfile.ZipFile(source_zip, 'w', zipfile.ZIP_DEFLATED) as archive:
 app_zip = OUTPUT / ('Agent-Orbit-' + VERSION + '-macos-' + platform.machine() + '.zip')
 if app_zip.exists(): app_zip.unlink()
 subprocess.run(['/usr/bin/ditto', '-c', '-k', '--norsrc', '--noextattr', '--noacl', '--keepParent', str(APP), str(app_zip)], check=True)
-video = OUTPUT / 'agent-orbit-demo.mp4'
-shutil.copy2(ROOT / 'docs/media/agent-orbit-demo.mp4', video)
-checksums = '\n'.join(hashlib.sha256(path.read_bytes()).hexdigest() + '  ' + path.name for path in (source_zip, app_zip, video)) + '\n'
+assets = [source_zip, app_zip]
+if options.include_demo:
+    video = OUTPUT / 'agent-orbit-demo.mp4'
+    shutil.copy2(ROOT / 'docs/media/agent-orbit-demo.mp4', video)
+    assets.append(video)
+checksums = '\n'.join(hashlib.sha256(path.read_bytes()).hexdigest() + '  ' + path.name for path in assets) + '\n'
 (OUTPUT / 'SHA256SUMS').write_text(checksums)
-print(source_zip)
-print(app_zip)
-print(video)
+for asset in assets:
+    print(asset)
+print(OUTPUT / 'SHA256SUMS')

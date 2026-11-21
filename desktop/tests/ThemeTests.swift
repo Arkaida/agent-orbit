@@ -173,6 +173,7 @@ private final class ThemeTestSuite {
                 check(loaded.waitReminderEnabled && loaded.waitReminderSound && loaded.waitReminderMinutes == 5,
                       "Old settings must gain a five-minute wait reminder without discarding existing preferences")
                 check(loaded.sessionGroups.isEmpty, "Old settings must not automatically group sessions")
+                check(loaded.waveResources && loaded.waveSensitivity == 1, "Old settings gain resource layers without replacing their stored wave style")
                 let restored = try decoder.decode(AppSettings.self, from: loaded.encoded())
                 check(restored.theme == loaded.theme && restored.orbitLabelColor == loaded.orbitLabelColor, "Saving and reopening old settings must preserve the selected mode")
                 let palette = PaletteResolver(theme: restored.theme, statusStyle: restored.orbitLabelColor)
@@ -218,6 +219,39 @@ private final class ThemeTestSuite {
                 catch { check(false, "New wave style rejected") }
             }
         } catch { failures.append("Group settings could not round-trip: \(error)") }
+        do {
+            var settings = AppSettings(); settings.waveResources = false; settings.waveSensitivity = 1.7; settings.waveStyle = "dots"
+            let restored = try decoder.decode(AppSettings.self, from: settings.encoded())
+            check(!restored.waveResources && restored.waveSensitivity == 1.7 && restored.waveStyle == "dots", "Resource settings must round-trip without replacing a selected wave style")
+            for value in [0.59, 1.81, Double.nan, Double.infinity] {
+                settings.waveSensitivity = value
+                do { try settings.validate(); check(false, "Invalid resource sensitivity was accepted") }
+                catch { check(true, "Invalid resource sensitivity rejected") }
+            }
+        } catch { failures.append("Resource settings could not round-trip: \(error)") }
+    }
+
+    func resourcePalettes() {
+        for skin in SkinDefinition.all {
+            let palette = PaletteResolver(skin: skin, statusStyle: "theme")
+            let classic = PaletteResolver(skin: skin, statusStyle: "status")
+            let resources = ResourceRole.allCases
+            check(Set(resources.map { palette.resourceToken($0) }).count == resources.count, "\(skin.id): all resource layers require different colors")
+            ThemePalette.configure(theme: skin.id, statusStyle: "theme")
+            for role in resources {
+                let token = palette.resourceToken(role)
+                check(token == classic.resourceToken(role), "Resource colors must remain independent of state-color preference")
+                check(contrast(token, palette.token(.base)) >= 3, "\(skin.id): resource \(role) needs visible contrast")
+                check(nativeToken(ThemePalette.resourceColor(role)) == token, "Native resource bridge must use the skin's resource token")
+                check(palette.resourceToken(role, fraction: .nan) == token, "Nonfinite resource gradients must be deterministic")
+            }
+            for i in resources.indices { for j in resources.indices where j > i {
+                check(distance(palette.resourceToken(resources[i]), palette.resourceToken(resources[j])) >= 15, "\(skin.id): resource layers are too similar")
+            } }
+        }
+        let neon = PaletteResolver(theme: "neon", statusStyle: "theme")
+        let aurora = PaletteResolver(theme: "aurora", statusStyle: "theme")
+        check(ResourceRole.allCases.contains { neon.resourceToken($0) != aurora.resourceToken($0) }, "Switching skins must also change resource colors")
     }
 
     func injectedSkinExtension() {
@@ -268,6 +302,7 @@ private struct ThemeTests {
         suite.registryAndSemanticPalettes()
         suite.statePrecedence()
         suite.waveSemanticsAndFallbacks()
+        suite.resourcePalettes()
         suite.legacySettingsRoundTrip()
         suite.injectedSkinExtension()
         suite.previewIsolation()

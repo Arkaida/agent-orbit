@@ -23,6 +23,8 @@ struct AppSettings: Codable {
     var wavePalette = "theme"
     var waveHeight = 1.3
     var waveDensity = 1.0
+    var waveResources = true
+    var waveSensitivity = 1.0
     var pinned = true
     var sound = true
     var completionSound = true
@@ -40,7 +42,7 @@ struct AppSettings: Codable {
 
     enum CodingKeys: String, CodingKey {
         case version, remoteEnabled, host, tmuxSocket, localEnabled, localCodexHome, localLimit, localFollowed,
-             interval, theme, orbitLabelColor, waveStyle, wavePalette, waveHeight, waveDensity,
+             interval, theme, orbitLabelColor, waveStyle, wavePalette, waveHeight, waveDensity, waveResources, waveSensitivity,
              pinned, sound, completionSound, errorSound, waitReminderEnabled, waitReminderMinutes, waitReminderSound, showPreviews, showBackgroundCounts,
              bubbleScale, opacity, reduceMotion, launchCompact, sessionGroups
     }
@@ -63,6 +65,8 @@ struct AppSettings: Codable {
         wavePalette = try c.decodeIfPresent(String.self, forKey: .wavePalette) ?? wavePalette
         waveHeight = try c.decodeIfPresent(Double.self, forKey: .waveHeight) ?? waveHeight
         waveDensity = try c.decodeIfPresent(Double.self, forKey: .waveDensity) ?? waveDensity
+        waveResources = try c.decodeIfPresent(Bool.self, forKey: .waveResources) ?? waveResources
+        waveSensitivity = try c.decodeIfPresent(Double.self, forKey: .waveSensitivity) ?? waveSensitivity
         pinned = try c.decodeIfPresent(Bool.self, forKey: .pinned) ?? pinned
         sound = try c.decodeIfPresent(Bool.self, forKey: .sound) ?? sound
         completionSound = try c.decodeIfPresent(Bool.self, forKey: .completionSound) ?? completionSound
@@ -91,6 +95,7 @@ struct AppSettings: Codable {
               ["theme", "bars", "curve", "dots", "plasma", "aurora", "radar", "off"].contains(waveStyle),
               ["theme", "ice", "aurora", "ember", "status"].contains(wavePalette) else { throw invalid("请选择有效的状态配色、声浪样式与配色。") }
         guard (0.5...1.5).contains(waveHeight), (0.6...1.6).contains(waveDensity) else { throw invalid("声浪高度需要在 50–150% 之间，密度需要在 60–160% 之间。") }
+        guard (0.6...1.8).contains(waveSensitivity) else { throw invalid("声浪灵敏度需要在 60–180% 之间。") }
         guard (1...120).contains(waitReminderMinutes) else { throw invalid("久等提醒需要在 1–120 分钟之间。") }
         guard sessionGroups.count <= 32 else { throw invalid("最多支持 32 个会话组。") }
         var groupIDs = Set<String>(), groupedMembers = Set<String>()

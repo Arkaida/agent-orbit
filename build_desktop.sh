@@ -18,7 +18,7 @@ python3 "$project_dir/scripts/prepare_runtime.py" "$app_dir/Contents/Resources/p
 python3 "$project_dir/scripts/prepare_runtime.py" "$app_dir/Contents/Resources/python" --sign-only
 engine_dir="$app_dir/Contents/Resources/engine"
 mkdir -p "$engine_dir"
-for source_file in configuration.py local_probe.py remote_probe.py monitor.py desktop_bridge.py completion_tracker.py response_tracker.py activity_tracker.py usage_tracker.py error_tracker.py README.md LICENSE THIRD_PARTY_NOTICES.md; do
+for source_file in configuration.py local_probe.py remote_probe.py resource_probe.py remote_bundle.py monitor.py desktop_bridge.py completion_tracker.py response_tracker.py activity_tracker.py usage_tracker.py error_tracker.py README.md LICENSE THIRD_PARTY_NOTICES.md; do
     if test -f "$project_dir/$source_file"; then /bin/cp "$project_dir/$source_file" "$engine_dir/$source_file"; fi
 done
 /usr/bin/codesign --force --sign - "$app_dir"

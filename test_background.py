@@ -19,6 +19,175 @@ def finished(task='bg1', status='completed', queue=False):
 
 
 class BackgroundTests(unittest.TestCase):
+    def test_live_background_agent_footer_beats_completed_foreground_without_double_counting(self):
+        screen = ('● Synthetic final answer\nYou will be notified when complete.\n\n'
+                  '* Waiting for 1 background agent to finish\n'
+                  '✔ Update installed · restart to apply\n──────────────── ultracode\n❯ \n'
+                  '────────────────\n⏵⏵ bypass permissions on\n● main\n○ general-purpose Inspecting…')
+        row = analyse_claude_screen(screen)
+        self.assertEqual(row['background_ui_agents'], 1)
+        self.assertEqual(row['state'], 'running')
+        for checking, agents in ((False, 0), (True, 0), (False, 1), (False, 2)):
+            with self.subTest(checking=checking, agents=agents):
+                background = dict(background_count=agents, background_agents=agents, background_terminals=0,
+                                  background_checking=checking, background_observable=True,
+                                  foreground_running=False, foreground_event='turn_complete', foreground_observable=True)
+                result = apply_claude_background(dict(row), background)
+                self.assertEqual(result['state'], 'running')
+                self.assertEqual(result['background_agents'], max(1, agents))
+                self.assertEqual(result['background_count'], max(1, agents))
+        completed = dict(background_count=0, background_agents=0, background_terminals=0,
+                         background_checking=False, background_observable=True, foreground_running=False,
+                         foreground_event='turn_complete', foreground_observable=True)
+        self.assertEqual(apply_claude_background(analyse_claude_screen('● All done\n────────────────\n❯ '), completed)['state'], 'idle')
+        failed = analyse_claude_screen('API Error: 503 unavailable\n' + screen[screen.index('* Waiting'):])
+        self.assertEqual(apply_claude_background(failed, completed)['state'], 'error')
+
+    def test_agent_footer_must_be_live_input_status_not_prose_or_history(self):
+        waiting = '* Waiting for 2 background agents to finish'
+        rejected = [
+            '● ' + waiting + '\n────────────────\n❯ ',
+            '> ' + waiting + '\n────────────────\n❯ ',
+            '```\n' + waiting + '\n────────────────\n❯ ',
+            waiting + '\n● Newer final answer\n────────────────\n❯ ',
+            waiting + '\n❯ Earlier question\n● New final\n────────────────\n❯ ',
+            waiting + '\n❯ ',
+            waiting + '\n────────────────\n❯ \nBack to bottom',
+            waiting + '\n' + '\n'.join('Synthetic old prose' for _ in range(7)) + '\n────────────────\n❯ '
+        ]
+        for screen in rejected:
+            with self.subTest(screen=screen):
+                self.assertEqual(analyse_claude_screen(screen)['background_ui_agents'], 0)
+        current = waiting + '\n────────────────\n❯ '
+        self.assertEqual(analyse_claude_screen(current)['background_ui_agents'], 2)
+        self.assertEqual(analyse_claude_screen(current, in_mode=True)['background_ui_agents'], 0)
+
+    def test_agent_result_async_flag_without_background_argument_survives_root_completion(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / 'session.jsonl'
+            records = [dict(type='assistant', message=dict(content=[dict(type='tool_use', name='Agent', id='synthetic-tool', input=dict(effort='high'))])),
+                       dict(type='user', toolUseResult=dict(agentId='synthetic-agent', isAsync=True, status='async_launched'),
+                            message=dict(content=[dict(type='tool_result', tool_use_id='synthetic-tool', content='Synthetic asynchronous launch')])),
+                       dict(type='system', subtype='turn_duration')]
+            path.write_text(''.join(json.dumps(item) + '\n' for item in records))
+            watcher = ClaudeBackgroundWatcher()
+            active = watcher.read_path(str(path))
+            self.assertEqual(active['background_agents'], 1)
+            self.assertIs(active['foreground_running'], False)
+            self.assertEqual(apply_claude_background(analyse_claude_screen('● Foreground done\n❯ '), active)['state'], 'running')
+            with path.open('a') as log:
+                log.write(json.dumps(finished('synthetic-agent', queue=True)) + '\n')
+            done = watcher.read_path(str(path))
+            self.assertEqual(done['background_agents'], 0)
+            self.assertEqual(apply_claude_background(analyse_claude_screen('● All done\n❯ '), done)['state'], 'idle')
+
+    def test_async_launch_status_is_explicit_evidence_but_sync_agent_id_is_not(self):
+        for name in ('Agent', 'Task'):
+            for flags, expected in ((dict(status='async_launched'), 1), (dict(isAsync=True), 1),
+                                    (dict(status='completed', isAsync=False), 0), ({}, 0)):
+                with self.subTest(name=name, flags=flags), tempfile.TemporaryDirectory() as directory:
+                    path = Path(directory) / 'session.jsonl'
+                    records = [dict(type='assistant', message=dict(content=[dict(type='tool_use', name=name, id='synthetic-tool', input={})])),
+                               dict(type='user', toolUseResult=dict(agentId='synthetic-agent', **flags),
+                                    message=dict(content=[dict(type='tool_result', tool_use_id='synthetic-tool', content='Synthetic result')]))]
+                    path.write_text(''.join(json.dumps(item) + '\n' for item in records))
+                    self.assertEqual(ClaudeBackgroundWatcher().read_path(str(path))['background_agents'], expected)
+
+    def test_latest_foreground_tail_wins_before_large_background_replay_finishes(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / 'session.jsonl'
+            start = json.dumps(dict(type='api-request', querySource='repl_main_thread')) + '\n'
+            filler = json.dumps(dict(type='api-request-blob', data='x' * 4096)) + '\n'
+            final = dict(type='assistant', message=dict(stop_reason='end_turn', content=[dict(type='text', text='Synthetic final')]))
+            prefix = start + filler * 2300
+            path.write_text(prefix + json.dumps(final) + '\n' + json.dumps(dict(type='system', subtype='turn_duration')) + '\n')
+            watcher = ClaudeBackgroundWatcher()
+            first = watcher.read_path(str(path))
+            self.assertTrue(first['background_checking'])
+            self.assertIs(first['foreground_running'], False)
+            self.assertTrue(first['foreground_observable'])
+            self.assertEqual(first['foreground_event'], 'turn_complete')
+            self.assertGreaterEqual(first['foreground_event_offset'], len(prefix.encode()))
+            self.assertEqual(apply_claude_background(analyse_claude_screen('● Finished\n❯ '), first)['state'], 'unknown')
+            second = watcher.read_path(str(path))
+            self.assertFalse(second['background_checking'])
+            self.assertIs(second['foreground_running'], False)
+            self.assertEqual(apply_claude_background(analyse_claude_screen('● Finished\n❯ '), second)['state'], 'idle')
+            with path.open('a') as log:
+                log.write(json.dumps(dict(type='api-request', querySource='repl_main_thread')) + '\n')
+            resumed = watcher.read_path(str(path))
+            self.assertIs(resumed['foreground_running'], True)
+            self.assertGreater(resumed['foreground_event_offset'], second['foreground_event_offset'])
+            self.assertEqual(apply_claude_background(analyse_claude_screen('● Previous final\n❯ '), resumed)['state'], 'running')
+
+    def test_text_end_turn_is_final_but_thinking_fragment_and_auxiliary_request_are_not(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / 'session.jsonl'
+            records = [dict(type='api-request', querySource='repl_main_thread'),
+                       dict(type='assistant', message=dict(stop_reason='end_turn', content=[dict(type='thinking', thinking='hidden')])),
+                       dict(type='assistant', message=dict(stop_reason='end_turn', content=[dict(type='text', text='Final answer')]))]
+            path.write_text(''.join(json.dumps(item) + '\n' for item in records))
+            watcher = ClaudeBackgroundWatcher()
+            finished_state = watcher.read_path(str(path))
+            self.assertIs(finished_state['foreground_running'], False)
+            with path.open('a') as log:
+                log.write(json.dumps(dict(type='api-request', querySource='prompt_suggestion')) + '\n')
+            self.assertIs(watcher.read_path(str(path))['foreground_running'], False)
+            with path.open('a') as log:
+                log.write(json.dumps(dict(type='user', message=dict(content='New synthetic request'))) + '\n')
+            self.assertIs(watcher.read_path(str(path))['foreground_running'], True)
+
+    def test_verified_completion_corrects_stale_spinner_but_a_new_request_stays_running(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / 'session.jsonl'
+            path.write_text(json.dumps(dict(type='system', subtype='turn_duration')) + '\n')
+            watcher = ClaudeBackgroundWatcher()
+            stale_screen = '● Finished\n✻ Thinking… (42s · esc to interrupt)\n❯ '
+            self.assertEqual(analyse_claude_screen(stale_screen)['state'], 'running')
+            finished_state = watcher.read_path(str(path))
+            self.assertEqual(apply_claude_background(analyse_claude_screen(stale_screen), finished_state)['state'], 'idle')
+            with path.open('a') as log:
+                log.write(json.dumps(dict(type='api-request', querySource='repl_main_thread')) + '\n')
+            current = watcher.read_path(str(path))
+            self.assertEqual(apply_claude_background(analyse_claude_screen(stale_screen), current)['state'], 'running')
+
+    def test_partial_foreground_tail_cannot_reuse_old_complete_as_confirmed_waiting(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / 'session.jsonl'
+            path.write_text(json.dumps(dict(type='system', subtype='turn_duration')) + '\n')
+            watcher = ClaudeBackgroundWatcher()
+            self.assertIs(watcher.read_path(str(path))['foreground_running'], False)
+            request = (json.dumps(dict(type='api-request', querySource='repl_main_thread')) + '\n').encode()
+            with path.open('ab') as log:
+                log.write(request[:20])
+            partial = watcher.read_path(str(path))
+            self.assertFalse(partial['foreground_observable'])
+            self.assertIsNone(partial['foreground_running'])
+            self.assertEqual(apply_claude_background(analyse_claude_screen('● Old final\n❯ '), partial)['state'], 'unknown')
+            # Even callers retaining a cached False must honor its explicit
+            # unobservable marker rather than falling through to idle.
+            cached = dict(partial, foreground_running=False, background_checking=False)
+            self.assertEqual(apply_claude_background(analyse_claude_screen('● Old final\n❯ '), cached)['state'], 'unknown')
+            with path.open('ab') as log:
+                log.write(request[20:])
+            self.assertIs(watcher.read_path(str(path))['foreground_running'], True)
+
+    def test_real_active_agent_survives_foreground_completion_but_workflow_text_is_unverified(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / 'session.jsonl'
+            records = launch('Agent', 'active-child') + [dict(type='system', subtype='turn_duration')]
+            path.write_text(''.join(json.dumps(item) + '\n' for item in records))
+            watcher = ClaudeBackgroundWatcher()
+            active = watcher.read_path(str(path))
+            self.assertEqual(active['background_agents'], 1)
+            self.assertEqual(apply_claude_background(analyse_claude_screen('● Foreground done\n❯ '), active)['state'], 'running')
+            with path.open('a') as log:
+                log.write(json.dumps(finished('active-child')) + '\n')
+            done = watcher.read_path(str(path))
+            self.assertEqual(apply_claude_background(analyse_claude_screen('● All done\n❯ '), done)['state'], 'idle')
+            workflow = '● Old workflow message\n* Waiting for 1 dynamic workflow to finish\n❯ '
+            self.assertEqual(apply_claude_background(analyse_claude_screen(workflow), done)['state'], 'unknown')
+
     def test_visible_dynamic_workflow_overrides_idle_prompt_and_finished_foreground(self):
         screen = '● 工作流完成后我会继续\n* Waiting for 1 dynamic workflow to finish\n─────\n❯ \n─────\n⏵⏵ bypass permissions on · ← 6 agents\n○ environment-analysis ▰▰ 0/4 · 1m53s'
         row = analyse_claude_screen(screen)

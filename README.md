@@ -24,18 +24,20 @@ Monitor **Codex CLI and Claude Code CLI sessions** from a compact always-on-top 
 
 > **独立应用。** 下载后双击 `.app` 即可运行，无需安装 Python、Node.js 或 Codex 插件，也不需要在 Codex 中启动。它读取你已有的会话，不启动或接管 Agent。
 
+**5.2.5 更新**：修复 Claude 完成状态和异步子智能体漏判；资源声浪改为同圈叠加、停止后立即收起；用细双色弧表示空闲／运行比例，并显示近 30 秒实际新增 Token。[更新说明](docs/RELEASES.md)
+
 ## 看看它如何工作
 
 https://github.com/user-attachments/assets/13b256c0-9bb2-414b-a473-045c255d25ad
 
-[下载完整介绍视频 MP4](https://github.com/Arkaida/agent-orbit/releases/latest/download/agent-orbit-demo.mp4)
+[下载完整介绍视频 MP4](https://github.com/Arkaida/agent-orbit/releases/download/v5.2.1/agent-orbit-demo.mp4)
 
-视频可直接点击播放。全部画面使用应用原生界面与虚构会话数据，未录入真实桌面、主机或对话。
+视频可直接点击播放，展示 5.2.1 界面。全部画面使用应用原生界面与虚构会话数据，未录入真实桌面、主机或对话。
 
 <details>
 <summary>展开 GIF 动图预览</summary>
 
-[![Privacy-safe animated demo](docs/media/demo.gif)](https://github.com/Arkaida/agent-orbit/releases/latest/download/agent-orbit-demo.mp4)
+[![Privacy-safe animated demo](docs/media/demo.gif)](https://github.com/Arkaida/agent-orbit/releases/download/v5.2.1/agent-orbit-demo.mp4)
 
 </details>
 
@@ -53,12 +55,12 @@ https://github.com/user-attachments/assets/13b256c0-9bb2-414b-a473-045c255d25ad
 - **本机 + 远端 CLI 监控**：自动发现本机 Codex CLI；通过 SSH 读取远端 tmux 中的 Codex CLI / Claude Code CLI。连接状态彼此独立。
 - **关注重要会话**：分别配置本机和远端关注列表；关闭设置后继续监控。
 - **分会话效率与待响应**：逐个查看工作时长、等待时长、输出和工具速度；久等提醒可调整阈值、稍后提醒，回答后自动清除旧等待。[提醒规则](docs/RESPONSE.md)
-- **独立或编组，由你配置**：设置中选成员创建互斥组；任一成员工作时不催其他成员，全组共同统计空闲／运行时间。随时移出或拆组，默认不自动编组。
+- **独立或编组，由你配置**：设置中选成员创建互斥组，整个组在圆周上只占一个位置，面板合并为一张可展开的卡片；共用一段声浪、空闲／运行计时和去重后的用量。任一成员工作时不催其他成员，随时可移出或拆组，默认不自动编组。
 - **两种悬浮球**：小号球显示待响应和最长等待，完整球显示圆周会话名；单击切换大小，双击打开面板，拖动移动，多会话自动双圈。
 - **完成与异常提醒**：分别控制声音，恢复后自动移除旧异常，不展示执行历史。
 - **统一状态配色**：四套皮肤；名字、状态文字、圆弧与标记使用同一套状态色，可选择皮肤状态色或经典状态色。另可调整置顶、透明度、悬浮球尺寸及显示内容。
-- **自定义外围声浪**：选择随皮肤、全息分段声浪柱、曲线、光点，以及等离子双波、极光光带、雷达涟漪；分别设置配色、高度与密度。声浪随真实输出活动变化；圆周名字下显示累计闲／跑时长。
-- **全局用量总览**：查看会话运行占比、实时消耗、累计 Token、上游输出速度和工具完成速度；读取 CLI 实际用量记录，标明统计覆盖范围。[指标口径](docs/METRICS.md)
+- **自定义外围声浪**：资源通道在同一圈叠加，只显示正在运行会话的真实活动；可调高度、密度与灵敏度，关闭资源模式后可选原有样式。名称旁的细双色比例弧表示累计空闲与运行占比，悬停查看具体时长。
+- **实时 Token 数量**：悬浮球和各会话显示近 30 秒新增 Token，面板显示完整累计数字；同时查看运行占比、消耗速度、上游输出速度和工具完成速度。读取 CLI 实际用量记录，标明统计覆盖范围。[指标口径](docs/METRICS.md)
 - **保留原工作方式**：远端卡片进入原 tmux 会话，本机卡片唤起 Codex 客户端。
 
 <img src="docs/media/usage-overview.png" width="320" alt="Per-session waiting timers, output token rate, tool rate and observed idle/run totals, with synthetic demo data">

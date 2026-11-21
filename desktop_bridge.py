@@ -174,6 +174,8 @@ def source_payload(name, state, health, selected):
         compact.update(pane_id=pane_id(row['pane_id']), source=name,
                        source_label='远端' if name == 'remote' else '本机', available=health['connected'],
                        group_id=name + ':' + row['session'] if name == 'remote' else row.get('group_id', row['pane_id']))
+        if not health['connected'] or row.get('state') == 'missing':
+            compact['resources'] = None
         rows.append(compact)
     def events(values):
         return [dict(event, pane_id=pane_id(event['pane_id']), source=name) for event in values]
@@ -281,8 +283,8 @@ def run(args):
                            received_frames=sum(r['stream'].total_frames for r in runtimes.values()), emitted_at=time.time(),
                            connections=connections, local_sessions=discovered)
             metrics_at = time.monotonic()
-            payload['metrics'] = usage.aggregate(payload['rows'], metrics_at, connections)
             payload['rows'] = responses.annotate(payload['rows'], metrics_at, connections, settings)
+            payload['metrics'] = usage.aggregate(payload['rows'], metrics_at, connections)
             payload['rows'] = [dict(row, usage_metrics=usage.pane_metrics(row, metrics_at, connections))
                                for row in payload['rows']]
             print(json.dumps(payload, ensure_ascii=False), flush=True)

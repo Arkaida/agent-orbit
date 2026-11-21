@@ -79,6 +79,7 @@ struct Pane: Decodable, Identifiable {
     var response: SessionResponse?
     var responseGroup: SessionResponseGroup?
     var usageMetrics: UsageMetrics?
+    var resources: ResourceMetrics?
     var effectiveResponse: SessionResponse? { responseGroup?.response ?? response }
     var responseMonitorKey: String { responseGroup.map { "group:" + $0.id } ?? (source ?? "remote") + ":" + monitorKey }
     var responseEpisodeKey: String? {
@@ -87,6 +88,7 @@ struct Pane: Decodable, Identifiable {
         return (source ?? "remote") + ":" + episode
     }
     var monitorKey: String { groupId ?? session }
+    var orbitKey: String { responseGroup.map { "group:" + $0.id } ?? monitorKey }
     var orbitName: String { source == "local" ? "本·" + String(session.prefix(12)) + "·" + String((threadId ?? paneId).suffix(4)) : session }
     var backgroundCount: Int?
     var backgroundAgents: Int?
@@ -154,12 +156,18 @@ struct UsageMetrics: Decodable {
     var cacheWriteInputTokens: Int?
     var consumptionPerSecond: Double?
     var upstreamTokensPerSecond: Double?
+    var windowTokens: Int?
+    var windowOutputTokens: Int?
     var toolsPerMinute: Double?
+    var toolCompletions: Int?
+    var activeTools: Int?
+    var toolsEpoch: Int?
     var liveUsageCovered: Int?
     var liveToolsCovered: Int?
     var windowSeconds: Int?
     var workWindowSeconds: Int?
     var scope: String?
+    var rootIdentity: String?
 
     static func amount(_ value: Int?) -> String {
         guard let value = value, value >= 0 else { return "—" }
@@ -167,6 +175,13 @@ struct UsageMetrics: Decodable {
         if value >= 1_000_000 { return String(format: "%.2fM", Double(value) / 1_000_000) }
         if value >= 1_000 { return String(format: "%.1fk", Double(value) / 1_000) }
         return "\(value)"
+    }
+    static func exactAmount(_ value: Int?) -> String {
+        guard let value = value, value >= 0 else { return "—" }
+        let digits = Array(String(value))
+        return digits.enumerated().map { index, digit in
+            (index > 0 && (digits.count - index) % 3 == 0 ? "," : "") + String(digit)
+        }.joined()
     }
     static func rate(_ value: Double?) -> String {
         guard let value = value, value.isFinite, value >= 0 else { return "—" }
@@ -187,8 +202,185 @@ struct UsageMetrics: Decodable {
     func liveRate(_ value: Double?, connected: Bool) -> String {
         Self.rate(connected ? value : nil)
     }
+    func liveWindowTokens(connected: Bool) -> String {
+        Self.exactAmount(connected ? windowTokens : nil)
+    }
     func accessibilitySummary(connected: Bool) -> String {
-        "总运行率 \(connected ? utilizationText : "—")，实时消耗 \(liveRate(consumptionPerSecond, connected: connected)) tok/s，累计 \(Self.amount(totalTokens)) tok，上游输出 \(liveRate(upstreamTokensPerSecond, connected: connected)) tok/s，工作速度 \(liveRate(toolsPerMinute, connected: connected)) 工具次/min，用量覆盖 \(usageCoverageText)"
+        "总运行率 \(connected ? utilizationText : "—")，近 \(windowSeconds ?? 30) 秒新增 \(liveWindowTokens(connected: connected)) tok，实时消耗 \(liveRate(consumptionPerSecond, connected: connected)) tok/s，累计 \(Self.exactAmount(totalTokens)) tok，上游输出 \(liveRate(upstreamTokensPerSecond, connected: connected)) tok/s，工作速度 \(liveRate(toolsPerMinute, connected: connected)) 工具次/min，用量覆盖 \(usageCoverageText)，实时覆盖 \(connected ? liveUsageCovered ?? 0 : 0)/\(usageSessions ?? 0)"
+    }
+    static func combining(_ rows: [Pane]) -> UsageMetrics? {
+        guard rows.contains(where: { $0.usageMetrics != nil }) else { return nil }
+        var roots: [String: UsageMetrics] = [:]
+        for row in rows {
+            let metrics = row.usageMetrics ?? UsageMetrics()
+            let key = (row.source ?? "remote") + ":" + (metrics.rootIdentity ?? "unknown:" + row.monitorKey)
+            let rank: (Int, Int, Int, Int, Int) = (metrics.usageCovered ?? 0, metrics.totalTokens ?? -1,
+                                                  metrics.liveUsageCovered ?? 0, metrics.liveToolsCovered ?? 0, metrics.toolsCovered ?? 0)
+            if let old = roots[key] {
+                let previousRank: (Int, Int, Int, Int, Int) = (old.usageCovered ?? 0, old.totalTokens ?? -1,
+                                                              old.liveUsageCovered ?? 0, old.liveToolsCovered ?? 0, old.toolsCovered ?? 0)
+                if previousRank >= rank { continue }
+            }
+            roots[key] = metrics
+        }
+        let values = Array(roots.values)
+        var result = UsageMetrics()
+        result.scope = "response_group"
+        result.usageSessions = values.count
+        result.usageCovered = values.reduce(0) { $0 + ($1.usageCovered ?? 0) }
+        result.toolsCovered = values.reduce(0) { $0 + ($1.toolsCovered ?? 0) }
+        result.liveUsageCovered = values.reduce(0) { $0 + ($1.liveUsageCovered ?? 0) }
+        result.liveToolsCovered = values.reduce(0) { $0 + ($1.liveToolsCovered ?? 0) }
+        result.windowSeconds = values.compactMap(\.windowSeconds).first ?? 30
+        result.workWindowSeconds = values.compactMap(\.workWindowSeconds).first ?? 60
+        let covered = values.filter { ($0.usageCovered ?? 0) > 0 }
+        func checkedSum(_ parts: [Int]) -> Int? {
+            var sum = 0
+            for part in parts {
+                let (next, overflow) = sum.addingReportingOverflow(part)
+                guard part >= 0, !overflow else { return nil }
+                sum = next
+            }
+            return sum
+        }
+        func total(_ key: KeyPath<UsageMetrics, Int?>) -> Int? {
+            let parts = covered.compactMap { $0[keyPath: key] }
+            return parts.count == covered.count && !parts.isEmpty ? checkedSum(parts) : nil
+        }
+        result.totalTokens = total(\.totalTokens); result.inputTokens = total(\.inputTokens)
+        result.outputTokens = total(\.outputTokens); result.cachedInputTokens = total(\.cachedInputTokens)
+        result.cacheWriteInputTokens = total(\.cacheWriteInputTokens)
+        let live = values.filter { ($0.liveUsageCovered ?? 0) > 0 }
+        func window(_ key: KeyPath<UsageMetrics, Int?>) -> Int? {
+            let parts = live.compactMap { $0[keyPath: key] }
+            return parts.count == live.count && !parts.isEmpty ? checkedSum(parts) : nil
+        }
+        func rate(_ rows: [UsageMetrics], _ key: KeyPath<UsageMetrics, Double?>) -> Double? {
+            let parts = rows.compactMap { $0[keyPath: key] }
+            return parts.count == rows.count && !parts.isEmpty ? parts.reduce(0, +) : nil
+        }
+        result.windowTokens = window(\.windowTokens); result.windowOutputTokens = window(\.windowOutputTokens)
+        result.consumptionPerSecond = rate(live, \.consumptionPerSecond)
+        result.upstreamTokensPerSecond = rate(live, \.upstreamTokensPerSecond)
+        result.toolsPerMinute = rate(values.filter { ($0.liveToolsCovered ?? 0) > 0 }, \.toolsPerMinute)
+        let toolValues = values.filter { ($0.toolsCovered ?? 0) > 0 }
+        let completions = toolValues.compactMap(\.toolCompletions)
+        result.toolCompletions = completions.count == toolValues.count && !completions.isEmpty ? checkedSum(completions) : nil
+        let active = values.compactMap(\.activeTools)
+        result.activeTools = active.count == values.count && !active.isEmpty ? checkedSum(active) : nil
+        return result
+    }
+}
+
+/// Resource observations describe process ownership, independently of task state.
+struct ResourceMetrics: Decodable {
+    var identity: String?
+    var epoch: String?
+    var sampleId: Int?
+    var sampleAgeSeconds: Double?
+    var scope: String?
+    var processCount: Int?
+    var sharedSessions: Int?
+    var treeComplete: Bool?
+    var memoryBytes: Int?
+    var hostMemoryBytes: Int?
+    var memoryAvailable: Bool?
+    var memoryComplete: Bool?
+    var memoryReason: String?
+    var ioReadBytes: Int?
+    var ioWriteBytes: Int?
+    var ioReadPerSecond: Double?
+    var ioWritePerSecond: Double?
+    var ioAvailable: Bool?
+    var ioComplete: Bool?
+    var ioScope: String?
+    var ioKind: String?
+    var ioReason: String?
+    var networkRxBytes: Int?
+    var networkTxBytes: Int?
+    var networkRxPerSecond: Double?
+    var networkTxPerSecond: Double?
+    var networkAvailable: Bool?
+    var networkComplete: Bool?
+    var networkShared: Bool?
+    var networkScope: String?
+    var networkReason: String?
+    var isFresh: Bool { sampleAgeSeconds.map { $0.isFinite && $0 >= 0 && $0 <= 4 } ?? true }
+    static func bytes(_ value: Int?) -> String {
+        guard let value = value, value >= 0 else { return "—" }
+        return ByteCountFormatter.string(fromByteCount: Int64(value), countStyle: .binary)
+    }
+    static func rate(_ value: Double?) -> String {
+        guard let value = value, value.isFinite, value >= 0 else { return "—" }
+        let units = ["B/s", "KiB/s", "MiB/s", "GiB/s"]
+        var amount = value, index = 0
+        while amount >= 1024 && index < units.count - 1 { amount /= 1024; index += 1 }
+        return String(format: amount >= 100 ? "%.0f %@" : "%.1f %@", amount, units[index])
+    }
+    func summary(connected: Bool) -> String {
+        guard connected && isFresh else { return "资源未观测" }
+        var lines: [String] = []
+        if scope == "shared_process" { lines.append("共享进程资源，无法拆分到单个会话") }
+        let memory = memoryAvailable == true ? Self.bytes(memoryBytes) : "—"
+        lines.append("进程树 RSS \(memory)" + (memoryAvailable == true && memoryComplete != true ? "（部分）" : "") + "；共享内存页可能重复计入")
+        let net = networkAvailable == true
+            ? "TCP ↓\(Self.rate(networkRxPerSecond)) ↑\(Self.rate(networkTxPerSecond))" + (networkComplete == true ? "" : "（部分）")
+            : "TCP 流量未观测"
+        lines.append(net + (networkShared == true ? "；共享连接未重复分摊" : ""))
+        lines.append(ioAvailable == true ? "根进程 I/O 读 \(Self.rate(ioReadPerSecond))，写 \(Self.rate(ioWritePerSecond))（系统调用字节，含已回收子进程）" : "根进程 I/O 未观测")
+        return lines.joined(separator: "\n")
+    }
+}
+
+/// A configured group occupies one visual position; member panes remain available to open.
+struct SessionUnit: Identifiable {
+    var id: String
+    var rows: [Pane]
+    var group: SessionResponseGroup? { rows.compactMap(\.responseGroup).first }
+    var isGroup: Bool { group != nil }
+    var name: String { group?.name ?? rows.first?.orbitName ?? "会话" }
+    static func collect(_ rows: [Pane]) -> [SessionUnit] {
+        var order: [String] = []
+        var grouped: [String: [Pane]] = [:]
+        for row in rows {
+            let key = row.responseGroup != nil ? row.orbitKey : "pane:" + row.paneId
+            if grouped[key] == nil { order.append(key) }
+            grouped[key, default: []].append(row)
+        }
+        return order.map { SessionUnit(id: $0, rows: grouped[$0] ?? []) }
+    }
+    func visualState(connected: (Pane) -> Bool) -> SessionVisualState {
+        let states = rows.map { $0.visualState(connected: connected($0)) }
+        guard isGroup else { return .mostImportant(states) }
+        let live = states.filter { $0 != .offline }
+        guard !live.isEmpty else { return .offline }
+        if live.contains(.error) { return .error }
+        if live.contains(.attention) { return .attention }
+        if live.contains(.running) { return .running }
+        if live.count != states.count || live.contains(.unknown) || ["unknown", "offline"].contains(group?.kind ?? "") { return .unknown }
+        return .waiting
+    }
+    func summaryPane(connected: (Pane) -> Bool) -> Pane? {
+        guard var pane = rows.min(by: { $0.visualState(connected: connected($0)).priority < $1.visualState(connected: connected($1)).priority }) else { return nil }
+        guard isGroup else { return pane }
+        let state = visualState(connected: connected)
+        pane.paneId = id; pane.groupId = id; pane.session = name
+        pane.state = state == .waiting ? "idle" : state == .attention ? "approval" : state == .offline ? "unknown" : state.rawValue
+        pane.available = state != .offline
+        let labels: [SessionVisualState: String] = [.running: "运行中", .waiting: "等待输入", .attention: "待处理", .error: "异常", .unknown: "待核实", .offline: "离线"]
+        pane.status = (labels[state] ?? "待核实") + " · \(Set(rows.map(\.monitorKey)).count) 会话"
+        pane.attentionLevel = state == .error ? "error" : state == .attention ? "warning" : nil
+        pane.responseGroup = group; pane.response = group?.response
+        pane.source = nil; pane.threadId = nil
+        let agents = Set(rows.compactMap(\.agent)); pane.agent = agents.count == 1 ? agents.first : nil
+        pane.preview = []; pane.working = nil
+        let errors = rows.filter { connected($0) }.compactMap { row -> String? in
+            guard let error = row.errorSummary, !error.isEmpty else { return nil }
+            return row.session + ": " + error
+        }
+        pane.errorSummary = errors.isEmpty ? nil : errors.joined(separator: "；")
+        pane.usageMetrics = UsageMetrics.combining(rows)
+        return pane
     }
 }
 

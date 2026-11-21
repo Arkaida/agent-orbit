@@ -23,6 +23,8 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - run: sh scripts/check_theme.sh
+      - run: sh scripts/check_session_units.sh
+      - run: sh scripts/check_orbit_waves.sh
       - run: sh build_desktop.sh
       - run: codesign --verify --deep --strict 'Agent Orbit.app'
       - run: python3 scripts/package_release.py

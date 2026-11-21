@@ -41,6 +41,18 @@ def claude_tool(tid='tool-1', failed=False):
                                                        is_error=failed, content='result')]))
 
 
+def codex_call(call='call-1', item='call-item-1', kind='function_call'):
+    return dict(type='response_item', payload=dict(type=kind, call_id=call, id=item,
+                                                 name='synthetic_tool', arguments='{}'))
+
+
+def claude_call(tid='tool-1', mid='message-1', stop_reason='tool_use'):
+    record = claude_usage(mid)
+    record['message'].update(content=[dict(type='tool_use', id=tid, name='SyntheticTool', input={})],
+                             stop_reason=stop_reason)
+    return record
+
+
 class UsageProbeTests(unittest.TestCase):
     def setUp(self):
         self.directory = tempfile.TemporaryDirectory()
@@ -72,6 +84,110 @@ class UsageProbeTests(unittest.TestCase):
         self.assertTrue(result['usage_complete'])
         self.append(codex_usage(80, 10))
         self.assertEqual(watcher.sample(self.path, 'codex')['total_tokens'], 90)
+
+    def test_codex_active_calls_complete_and_replayed_starts_stay_closed(self):
+        self.write(metadata(), codex_call(), codex_call())
+        watcher = UsageLogWatcher()
+        first = watcher.sample(self.path, 'codex')
+        self.assertEqual((first['active_tools'], first['tool_completions']), (1, 0))
+        self.append(codex_call('custom-2', 'custom-item-2', 'custom_tool_call'))
+        self.assertEqual(watcher.sample(self.path, 'codex')['active_tools'], 2)
+        self.append(codex_tool(), codex_tool())
+        closed = watcher.sample(self.path, 'codex')
+        self.assertEqual((closed['active_tools'], closed['tool_completions']), (1, 1))
+        self.append(codex_tool('custom-2', 'output-2', 'custom_tool_call_output', failed=True), codex_call())
+        final = watcher.sample(self.path, 'codex')
+        self.assertEqual((final['active_tools'], final['tool_completions']), (0, 2))
+        self.assertTrue(final['tools_complete'])
+
+    def test_codex_terminal_lifecycle_clears_pending_without_counting_a_result(self):
+        for kind in ('turn_complete', 'task_complete', 'turn_aborted', 'task_aborted',
+                     'turn_failed', 'task_failed', 'error'):
+            with self.subTest(kind=kind):
+                self.write(metadata(), codex_call(), dict(type='event_msg', payload=dict(type=kind)))
+                result = UsageLogWatcher().sample(self.path, 'codex')
+                self.assertEqual((result['active_tools'], result['tool_completions']), (0, 0))
+
+    def test_codex_builtin_active_status_requires_matchable_identity_and_status(self):
+        self.write(metadata(), dict(type='response_item', payload=dict(type='web_search_call', id='web-1', status='searching')))
+        watcher = UsageLogWatcher()
+        self.assertEqual(watcher.sample(self.path, 'codex')['active_tools'], 1)
+        self.append(dict(type='response_item', payload=dict(type='web_search_call', id='web-1', status='completed')))
+        result = watcher.sample(self.path, 'codex')
+        self.assertEqual((result['active_tools'], result['tool_completions']), (0, 1))
+        self.append(dict(type='response_item', payload=dict(type='local_shell_call', id='shell-1', status='in_progress')))
+        self.assertEqual(watcher.sample(self.path, 'codex')['active_tools'], 1)
+        self.append(dict(type='response_item', payload=dict(type='local_shell_call', id='shell-1', status='cancelled')))
+        cancelled = watcher.sample(self.path, 'codex')
+        self.assertEqual((cancelled['active_tools'], cancelled['tool_completions']), (0, 1))
+        self.append(dict(type='response_item', payload=dict(type='web_search_call', id='web-2')))
+        self.assertIsNone(watcher.sample(self.path, 'codex')['active_tools'])
+
+    def test_unidentified_tool_start_is_unknown_until_an_authoritative_turn_end(self):
+        self.write(metadata(), codex_call(None))
+        watcher = UsageLogWatcher()
+        unknown = watcher.sample(self.path, 'codex')
+        self.assertIsNone(unknown['active_tools'])
+        self.assertTrue(unknown['tools_complete'])  # Completion accounting is unchanged.
+        self.append(dict(type='event_msg', payload=dict(type='turn_complete')))
+        self.assertEqual(watcher.sample(self.path, 'codex')['active_tools'], 0)
+        self.write(claude_call(None))
+        self.assertIsNone(UsageLogWatcher().sample(self.path, 'claude')['active_tools'])
+
+    def test_claude_active_calls_ignore_sidechains_and_only_real_final_clears(self):
+        sidechain = claude_call('child-tool', 'child-message')
+        sidechain['isSidechain'] = True
+        self.write(claude_call(), claude_call(), sidechain)
+        watcher = UsageLogWatcher()
+        self.assertEqual(watcher.sample(self.path, 'claude')['active_tools'], 1)
+        self.append(claude_usage(output=8))  # Text/usage alone is not a turn end.
+        self.assertEqual(watcher.sample(self.path, 'claude')['active_tools'], 1)
+        self.append(claude_call('tool-2', 'message-2'))
+        self.assertEqual(watcher.sample(self.path, 'claude')['active_tools'], 2)
+        self.append(claude_tool(), claude_tool(), claude_call())
+        result = watcher.sample(self.path, 'claude')
+        self.assertEqual((result['active_tools'], result['tool_completions']), (1, 1))
+        final = claude_usage('message-3')
+        final['message']['stop_reason'] = 'end_turn'
+        self.append(final)
+        result = watcher.sample(self.path, 'claude')
+        self.assertEqual((result['active_tools'], result['tool_completions']), (0, 1))
+
+    def test_claude_tool_result_and_structured_terminal_boundaries(self):
+        for boundary in (dict(type='system', subtype='turn_duration'),
+                         dict(type='system', subtype='turn_aborted'),
+                         dict(type='result', subtype='success'),
+                         dict(type='result', subtype='error_during_execution'),
+                         dict(type='assistant', isApiErrorMessage=True, message=dict(content=[]))):
+            with self.subTest(boundary=boundary):
+                self.write(claude_call(), boundary)
+                result = UsageLogWatcher().sample(self.path, 'claude')
+                self.assertEqual((result['active_tools'], result['tool_completions']), (0, 0))
+        self.write(claude_call(), claude_tool())
+        result = UsageLogWatcher().sample(self.path, 'claude')
+        self.assertEqual((result['active_tools'], result['tool_completions']), (0, 1))
+
+    def test_active_tool_scan_and_partial_record_do_not_guess_pending_count(self):
+        self.write(metadata(), codex_call())
+        watcher = UsageLogWatcher(max_bytes=31)
+        self.assertIsNone(watcher.sample(self.path, 'codex')['active_tools'])
+        self.assertEqual(self.drain(watcher)['active_tools'], 1)
+        output = encoded(codex_tool())
+        with self.path.open('ab') as log:
+            log.write(output[:len(output) // 2])
+        self.assertIsNone(self.drain(watcher)['active_tools'])
+        with self.path.open('ab') as log:
+            log.write(output[len(output) // 2:])
+        final = self.drain(watcher)
+        self.assertEqual((final['active_tools'], final['tool_completions']), (0, 1))
+
+    def test_corrupt_history_and_excluded_roots_keep_active_tools_unknown(self):
+        self.path.write_bytes(encoded(metadata(), codex_call()) + b'{broken}\n')
+        result = UsageLogWatcher().sample(self.path, 'codex')
+        self.assertIsNone(result['active_tools'])
+        self.write(metadata(dict(subagent=dict(thread_spawn=dict(parent_thread_id='parent')))), codex_call())
+        self.assertIsNone(UsageLogWatcher().sample(self.path, 'codex')['active_tools'])
+        self.assertIsNone(UsageLogWatcher().sample(None, 'claude')['active_tools'])
 
     def test_claude_message_id_merges_individual_maxima_and_cache_input(self):
         self.write(claude_usage(), claude_usage(output=7, cached=29),

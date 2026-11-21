@@ -56,7 +56,7 @@ class ConfigurationTests(unittest.TestCase):
     def test_custom_orbit_and_wave_preferences_survive_save_and_reload(self):
         with tempfile.TemporaryDirectory() as folder, patch.dict(os.environ, AGENT_ORBIT_DATA_DIR=folder, CODEX_REMOTE_DATA_DIR=''):
             preferences = dict(orbit_label_color='status', wave_style='dots', wave_palette='ember',
-                               wave_height=1.4, wave_density=.8)
+                               wave_height=1.4, wave_density=.8, wave_resources=False, wave_sensitivity=1.7)
             settings = validate(dict(defaults(), **preferences))
             atomic_json(Path(folder) / 'settings.json', settings)
             loaded = load_settings()
@@ -67,9 +67,10 @@ class ConfigurationTests(unittest.TestCase):
     def test_wave_controls_reject_invalid_values_even_when_waves_are_off(self):
         invalid = [dict(orbit_label_color='purple'), dict(orbit_label_color=True),
                    dict(wave_style='sparkle'), dict(wave_style=None),
-                   dict(wave_palette='neon'), dict(wave_palette=False)]
+                   dict(wave_palette='neon'), dict(wave_palette=False), dict(wave_resources=1)]
         for key, values in [('wave_height', [.49, 1.51, True, '1', float('nan'), float('inf')]),
-                            ('wave_density', [.59, 1.61, False, None, float('nan'), -float('inf')])]:
+                            ('wave_density', [.59, 1.61, False, None, float('nan'), -float('inf')]),
+                            ('wave_sensitivity', [.59, 1.81, True, None, float('nan'), float('inf')])]:
             invalid.extend({key: value} for value in values)
         for change in invalid:
             with self.subTest(change=change):

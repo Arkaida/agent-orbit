@@ -11,6 +11,7 @@ import sys
 import time
 import unicodedata
 from remote_probe import issue
+from remote_bundle import build_remote_source
 
 VERSION = '5.0.0'
 
@@ -43,7 +44,7 @@ def clip(text, width):
 
 class Stream:
     def __init__(self, host, socket, source, interval, selected):
-        self.host, self.socket, self.source = host, socket, source
+        self.host, self.socket, self.source = host, socket, build_remote_source(source)
         self.interval, self.selected = interval, selected
         self.process = None
         self.selector = selectors.DefaultSelector()

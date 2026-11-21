@@ -8,6 +8,7 @@ import subprocess
 import sys
 import time
 from configuration import load_settings, read_follow as configured_follow, save_follow
+from remote_bundle import build_remote_source
 
 ROOT = Path(__file__).resolve().parent
 try:
@@ -45,7 +46,7 @@ def fetch(selected=None):
         return LocalCollector(SETTINGS['local_codex_home'], SETTINGS['local_limit']).snapshot(selected or SETTINGS['local_followed'])['panes']
     if not args.host or args.host.startswith('-'):
         raise RuntimeError('请在设置中填写 SSH 主机，或使用 --host 主机名。')
-    script = (ROOT / 'remote_probe.py').read_bytes()
+    script = build_remote_source(root=ROOT).encode()
     command = 'python3 - ' + shlex.quote(args.socket) + ' ' + shlex.quote(json.dumps(selected or [], ensure_ascii=False))
     try:
         result = subprocess.run(['ssh', '-o', 'ConnectTimeout=10', args.host, command], input=script, stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=25)

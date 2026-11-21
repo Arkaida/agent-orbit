@@ -9,6 +9,7 @@ import select
 import subprocess
 import sys
 import time
+from resource_probe import AsyncProcessResources
 
 PROMPT = re.compile(r'^\s*[›»]\s*(.*)$')
 RUNNING = re.compile(r'^\s*(?:[•●◦]\s*)?.*\([^\n]*esc to interrupt\)', re.I)
@@ -190,6 +191,21 @@ def analyse_claude_screen(screen, command='claude', dead=False, agent_alive=None
     # Finished spinner lines (e.g. "✻ Churned for 54s · done 1:48 AM")
     # and the always-present permission-mode footer are not active work.
     scrolled = in_mode or any('Back to bottom' in x or re.search(r'Jump to bottom\s*\(ctrl\+End\)', x, re.I) for x in tail)
+    ui_agents = 0
+    if prompt is not None and not scrolled:
+        # This is Claude's live status area immediately above the current
+        # input separator, not an assistant's mention of background work.
+        for index in range(max(0, prompt - 6), prompt):
+            match = re.fullmatch(r'\s{0,1}\* Waiting for ([1-9]\d*) background agents? to finish\s*', lines[index], re.I)
+            if not match:
+                continue
+            footer = [line for line in lines[index + 1:prompt] if line.strip()]
+            separator = any(re.match(r'^\s*[─━]{3,}', line) for line in footer)
+            footer_only = all(re.match(r'^\s*(?:[─━]{3,}.*|✔\s+Update installed\b.*)$', line) for line in footer)
+            # A fenced example of this line is still prose, even beside a prompt.
+            fenced = sum(bool(re.match(r'^\s*(?:```|~~~)', line)) for line in lines[:index]) % 2
+            if separator and footer_only and not fenced:
+                ui_agents = int(match.group(1))
     dialog_lines = lines[-35:]
     approval = any(re.match(r'^\s*(?:Do you want to (?:proceed|allow|run|make|create|edit)|Would you like to (?:proceed|allow|run)|Allow .+\?|Claude (?:wants|requested) permission)', x, re.I)
                    for x in dialog_lines)
@@ -216,6 +232,9 @@ def analyse_claude_screen(screen, command='claude', dead=False, agent_alive=None
         failure = issue('需要回答问题后才能继续', 'question', 'warning')
     elif working:
         state, status = 'running', '运行中'
+    elif ui_agents:
+        state, status = 'running', '子智能体运行中（{}）'.format(ui_agents)
+        working = '等待 {} 个后台子智能体完成'.format(ui_agents)
     elif workflows:
         state, status = 'running', '后台工作流运行中（{}）'.format(workflows)
         working = '等待 {} 个后台工作流完成'.format(workflows)
@@ -254,7 +273,7 @@ def analyse_claude_screen(screen, command='claude', dead=False, agent_alive=None
             and not re.search(r'^\s*[─━]+|bypass permissions on|shift\+tab to cycle|until auto-compact|^\s*[✢✳✶✻✽✱].*\bdone\b|^\s*✔ Update installed', x, re.I)]
     progress = '|'.join(re.findall(r'\d+\s*/\s*\d+', '\n'.join(tail))) if workflows else ''
     return dict(state=state, status=status, working=working, preview=body[-3:], activity='\n'.join(body[-3:]),
-                background_workflows=workflows, background_progress=progress, **failure)
+                background_workflows=workflows, background_ui_agents=ui_agents, background_progress=progress, **failure)
 
 
 def read_processes():
@@ -340,7 +359,7 @@ class UsageLogWatcher:
     def empty(cls, agent):
         result = dict(identity=None, agent=agent, scope='root_session',
                       usage_available=False, usage_complete=False,
-                      tool_completions=None, tools_complete=False)
+                      tool_completions=None, tools_complete=False, active_tools=None)
         result.update((field, None) for field in cls.TOKEN_FIELDS)
         return result
 
@@ -354,6 +373,7 @@ class UsageLogWatcher:
                      root=True if agent == 'claude' else None,
                      codex_usage=None, claude_usage={}, claude_sums=[0] * 4,
                      claude_unknown=[0] * 4, tool_ids={}, tool_parents=[], tool_count=0,
+                     pending_tools=[], finished_tool_ids=set(), active_tools_error=False,
                      identity='{}:{}:{}:{}:{}'.format(agent, path, info.st_dev,
                                                      info.st_ino, generation))
         self.files[(agent, path)] = saved
@@ -390,6 +410,45 @@ class UsageLogWatcher:
             saved['tool_ids'][identity] = group
 
     @staticmethod
+    def tool_started(saved, identities):
+        identities = set(identities)
+        if not identities:
+            saved['active_tools_error'] = True
+            return
+        remaining = []
+        for pending in saved['pending_tools']:
+            if pending & identities:
+                identities.update(pending)
+            else:
+                remaining.append(pending)
+        # Replayed assistant fragments must not reopen a completed call.
+        if not identities & saved['finished_tool_ids']:
+            remaining.append(identities)
+        saved['pending_tools'] = remaining
+
+    @staticmethod
+    def tool_finished(saved, identities):
+        identities = set(identities)
+        if not identities:
+            saved['active_tools_error'] = True
+            return
+        remaining = []
+        for pending in saved['pending_tools']:
+            if pending & identities:
+                identities.update(pending)
+            else:
+                remaining.append(pending)
+        saved['pending_tools'] = remaining
+        saved['finished_tool_ids'].update(identities)
+
+    @staticmethod
+    def tools_ended(saved):
+        for pending in saved['pending_tools']:
+            saved['finished_tool_ids'].update(pending)
+        saved['pending_tools'] = []
+        saved['active_tools_error'] = False
+
+    @staticmethod
     def usage_gap(saved, agent, position):
         if agent == 'codex':
             if position < saved['usage_position']:
@@ -412,6 +471,31 @@ class UsageLogWatcher:
         if saved['root'] is not True:
             return
         kind = payload.get('type')
+        if item.get('type') == 'event_msg' and kind in (
+                'turn_complete', 'task_complete', 'turn_aborted', 'task_aborted',
+                'turn_failed', 'task_failed', 'error'):
+            self.tools_ended(saved)
+        if item.get('type') == 'response_item' and kind in ('function_call', 'custom_tool_call'):
+            call = payload.get('call_id')
+            if not isinstance(call, str) or not call:
+                saved['active_tools_error'] = True
+            else:
+                identities = [('call', call)]
+                if isinstance(payload.get('id'), str) and payload['id']:
+                    identities.append(('item', payload['id']))
+                self.tool_started(saved, identities)
+        elif item.get('type') == 'response_item' and kind in (
+                'web_search_call', 'local_shell_call', 'image_generation_call'):
+            tid, status = payload.get('id'), payload.get('status')
+            identities = [('item', tid)] if isinstance(tid, str) and tid else []
+            if status in ('started', 'in_progress', 'running', 'queued', 'searching'):
+                self.tool_started(saved, identities)
+            elif status in ('completed', 'failed', 'cancelled', 'canceled', 'incomplete'):
+                self.tool_finished(saved, identities)
+            else:
+                saved['active_tools_error'] = True
+        elif item.get('type') == 'response_item' and isinstance(kind, str) and kind.endswith('_call'):
+            saved['active_tools_error'] = True
         if item.get('type') == 'event_msg' and kind == 'token_count':
             if position < saved['usage_position']:
                 return
@@ -447,6 +531,11 @@ class UsageLogWatcher:
             if isinstance(payload.get('id'), str) and payload['id']:
                 identities.append(('item', payload['id']))
             self.tool_result(saved, identities)
+            self.tool_finished(saved, identities)
+            if not isinstance(payload.get('call_id'), str) or not payload['call_id']:
+                # An output item's ID need not be the call item's ID. Without
+                # the call alias, a pending function cannot reliably be closed.
+                saved['active_tools_error'] = True
         elif (item.get('type') == 'response_item' and
               kind in ('web_search_call', 'local_shell_call', 'image_generation_call') and
               payload.get('status') in ('completed', 'failed')):
@@ -488,10 +577,26 @@ class UsageLogWatcher:
         content = message.get('content') if isinstance(message, dict) else None
         if isinstance(content, list):
             for block in content:
-                if not isinstance(block, dict) or block.get('type') != 'tool_result':
+                if not isinstance(block, dict):
+                    continue
+                if block.get('type') == 'tool_use' and not item.get('isApiErrorMessage'):
+                    tid = block.get('id')
+                    self.tool_started(saved, [('tool', tid)] if isinstance(tid, str) and tid else [])
+                if block.get('type') != 'tool_result':
                     continue
                 tid = block.get('tool_use_id')
-                self.tool_result(saved, [('tool', tid)] if isinstance(tid, str) and tid else [])
+                identities = [('tool', tid)] if isinstance(tid, str) and tid else []
+                self.tool_result(saved, identities)
+                self.tool_finished(saved, identities)
+        if (isinstance(message, dict) and message.get('stop_reason') == 'end_turn' or
+                item.get('type') == 'assistant' and item.get('isApiErrorMessage') or
+                item.get('type') == 'system' and item.get('subtype') in (
+                    'turn_duration', 'turn_complete', 'task_complete', 'turn_aborted',
+                    'task_aborted', 'turn_failed', 'task_failed', 'error') or
+                item.get('type') == 'result' and (
+                    item.get('subtype') == 'success' or
+                    isinstance(item.get('subtype'), str) and item['subtype'].startswith('error_'))):
+            self.tools_ended(saved)
 
     def consume_line(self, saved, agent, line, position=0):
         if not line.strip():
@@ -537,6 +642,8 @@ class UsageLogWatcher:
         result['usage_complete'] = bool(usage_coverage and result['usage_available'] and not saved['usage_error'])
         result['tool_completions'] = saved['tool_count']
         result['tools_complete'] = bool(coverage and not saved['tools_error'])
+        if coverage and not saved['active_tools_error']:
+            result['active_tools'] = len(saved['pending_tools'])
         return result
 
     def codex_tail_usage(self, saved, path):
@@ -824,7 +931,8 @@ class ClaudeWatcher(RolloutWatcher):
             self.roots = {pid: self.roots[pid]}
         return path
 
-    def decode(self, item):
+    @staticmethod
+    def decode(item):
         if item.get('isSidechain'):
             return None
         kind, subtype = item.get('type'), item.get('subtype')
@@ -842,7 +950,17 @@ class ClaudeWatcher(RolloutWatcher):
             return ('stream_error' if retry else 'error'), detail, ''
         if kind == 'system' and subtype == 'turn_duration':
             return 'turn_complete', '', ''
-        if kind == 'api-request' or (kind == 'user' and not item.get('isMeta') and '<task-notification>' not in text and
+        if (kind == 'assistant' and isinstance(message, dict) and
+                message.get('stop_reason') == 'end_turn' and
+                (isinstance(content, str) and content.strip() or
+                 isinstance(content, list) and any(isinstance(block, dict) and block.get('type') == 'text' and
+                                                  isinstance(block.get('text'), str) and block['text'].strip()
+                                                  for block in content))):
+            # A thinking-only fragment can also carry end_turn; it is not the
+            # final answer or proof that the foreground request has ended.
+            return 'turn_complete', '', ''
+        if (kind == 'api-request' and item.get('querySource') in (None, 'repl_main_thread') or
+                kind == 'user' and not item.get('isMeta') and '<task-notification>' not in text and
                                     (isinstance(content, str) or any(c.get('type') == 'text' for c in content if isinstance(c, dict)))):
             return 'turn_started', '', ''
         return None
@@ -863,24 +981,74 @@ class ClaudeBackgroundWatcher:
             return content
         return '\n'.join(c.get('text', '') for c in content if isinstance(c, dict) and isinstance(c.get('text'), str)) if isinstance(content, list) else ''
 
+    @staticmethod
+    def foreground_event(saved, item, position):
+        decoded = ClaudeWatcher.decode(item)
+        if decoded is None or position < saved.get('foreground_position', -1):
+            return
+        kind = decoded[0]
+        if kind not in ('turn_started', 'task_started', 'stream_error', 'turn_complete',
+                        'task_complete', 'turn_aborted', 'turn_failed', 'error'):
+            return
+        saved.update(foreground=kind in ('turn_started', 'task_started', 'stream_error'),
+                     foreground_position=position, foreground_event=kind)
+
+    def foreground_tail(self, saved, path, info):
+        """Observe recent foreground events independently of background replay.
+
+        Offsets, rather than a timeout or replay order, determine which event
+        wins. A trailing partial record or an unobserved gap remains unknown.
+        """
+        signature = (info.st_size, info.st_mtime_ns)
+        if signature == saved.get('foreground_signature'):
+            return
+        saved['foreground_signature'] = signature
+        prior_until = saved.get('foreground_checked_until', 0)
+        prior_observable = saved.get('foreground_observable', False)
+        try:
+            with open(path, 'rb') as log:
+                current = os.fstat(log.fileno())
+                if (current.st_dev, current.st_ino) != saved['key'] or current.st_size < info.st_size:
+                    saved['foreground_observable'] = False
+                    return
+                start = max(0, info.st_size - 1048576)
+                partial_start = False
+                if start:
+                    log.seek(start - 1)
+                    partial_start = log.read(1) != b'\n'
+                log.seek(start)
+                data = log.read(info.st_size - start)
+            position, latest, last_bad = start, None, -1
+            pieces = data.split(b'\n')
+            truncated_record = partial_start and len(pieces) == 1
+            if partial_start:
+                position += len(pieces.pop(0)) + 1
+            for line in pieces:
+                if line.strip():
+                    try:
+                        item = json.loads(line)
+                        if not isinstance(item, dict):
+                            raise ValueError('not a record')
+                        if ClaudeWatcher.decode(item) is not None:
+                            latest = (position, item)
+                    except (ValueError, TypeError, AttributeError):
+                        last_bad = position
+                position += len(line) + 1
+            if latest is not None:
+                self.foreground_event(saved, latest[1], latest[0])
+            saved['foreground_observable'] = not truncated_record and (last_bad < 0 or latest is not None and latest[0] > last_bad) and (
+                latest is not None or start == 0 or start <= prior_until and prior_observable)
+            saved['foreground_checked_until'] = info.st_size
+        except OSError:
+            saved['foreground_observable'] = False
+
     def consume(self, saved, item, path):
         if item.get('isSidechain'):
             return
         message = item.get('message') or {}
         blocks = message.get('content', []) if isinstance(message, dict) else []
         kind = item.get('type')
-        if kind == 'api-request' and item.get('querySource') in (None, 'repl_main_thread'):
-            saved['foreground'] = True
-        elif kind == 'system' and item.get('subtype') == 'turn_duration':
-            saved['foreground'] = False
-        elif kind == 'assistant' and item.get('isApiErrorMessage'):
-            saved['foreground'] = False
-        elif kind == 'user' and not item.get('isMeta'):
-            text = self.text(blocks)
-            if text and '<task-notification>' not in text and not text.startswith('[Request interrupted by user'):
-                saved['foreground'] = True
-            elif text.startswith('[Request interrupted by user'):
-                saved['foreground'] = False
+        self.foreground_event(saved, item, saved.get('record_position', 0))
         for block in blocks if isinstance(blocks, list) else []:
             if not isinstance(block, dict):
                 continue
@@ -903,8 +1071,12 @@ class ClaudeBackgroundWatcher:
             if not isinstance(result, dict):
                 result = {}
             text = self.text(block.get('content'))
-            task_id = result.get('backgroundTaskId') or (result.get('agentId') if tool.get('background') else None)
-            if not task_id and tool.get('background'):
+            # Newer Claude Agent calls may choose asynchronous execution even
+            # without a run_in_background argument. The result is authoritative;
+            # a plain synchronous agentId remains a completed foreground call.
+            asynchronous = tool.get('background') or result.get('isAsync') is True or result.get('status') == 'async_launched'
+            task_id = result.get('backgroundTaskId') or (result.get('agentId') if asynchronous else None)
+            if not task_id and asynchronous:
                 match = re.search(r'(?:agentId|task[_ ]?id|background.{0,15}ID)\s*[:=]\s*([a-zA-Z0-9_-]+)', text, re.I)
                 task_id = match.group(1) if match else None
             if task_id and re.fullmatch(r'[a-zA-Z0-9_-]{1,100}', str(task_id)) and task_id not in saved['completed']:
@@ -947,21 +1119,50 @@ class ClaudeBackgroundWatcher:
             info = os.stat(path); key = (info.st_dev, info.st_ino)
             saved = self.files.get(path)
             if not saved or saved['key'] != key or info.st_size < saved['offset']:
-                saved = dict(key=key, offset=0, buffer=b'', active={}, completed=set(), tools={}, revision=0, foreground=None)
+                saved = dict(key=key, offset=0, buffer=b'', active={}, completed=set(), tools={}, revision=0, foreground=None,
+                             foreground_position=-1, foreground_event=None, foreground_observable=False,
+                             foreground_checked_until=0, history_error=False)
                 self.files[path] = saved
+            # CodexBackgroundWatcher supplies its own lifecycle reducer and
+            # keeps its existing read path; this tail protocol is Claude-only.
+            claude_foreground = type(self).consume is ClaudeBackgroundWatcher.consume
+            if claude_foreground:
+                self.foreground_tail(saved, path, info)
             with open(path, 'rb') as log:
                 log.seek(saved['offset'])
                 data = saved['buffer'] + log.read(8388608)
                 saved['offset'] = log.tell()
+            position = saved['offset'] - len(data)
             pieces = data.split(b'\n'); saved['buffer'] = pieces.pop()
             # A large unfinished media record must not grow without bound.
             if len(saved['buffer']) > 16777216:
                 saved['buffer'] = b''
+                saved['history_error'] = True
             for line in pieces:
+                if not line.strip():
+                    position += len(line) + 1
+                    continue
                 try:
+                    saved['record_position'] = position
                     self.consume(saved, json.loads(line), path)
                 except (ValueError, TypeError, AttributeError):
-                    continue
+                    saved['history_error'] = True
+                position += len(line) + 1
+            if claude_foreground and saved['offset'] >= info.st_size and saved['buffer']:
+                try:
+                    item = json.loads(saved['buffer'])
+                except (ValueError, TypeError):
+                    pass
+                else:
+                    saved['record_position'] = saved['offset'] - len(saved['buffer'])
+                    try:
+                        self.consume(saved, item, path)
+                    except (ValueError, TypeError, AttributeError):
+                        saved['history_error'] = True
+                    saved['buffer'] = b''
+            complete = saved['offset'] >= info.st_size and not saved['buffer'] and not saved['history_error']
+            if claude_foreground and complete:
+                saved['foreground_observable'] = True
             active = list(saved['active'].values())
             output_bytes = 0
             for task in active:
@@ -974,8 +1175,13 @@ class ClaudeBackgroundWatcher:
                 self.files = {path: saved}
             return dict(background_count=len(active), background_agents=sum(x['kind'] == 'agent' for x in active),
                         background_terminals=sum(x['kind'] == 'terminal' for x in active),
-                        background_checking=saved['offset'] < info.st_size, background_observable=True,
-                        background_output_bytes=output_bytes, background_revision=saved['revision'], foreground_running=saved['foreground'])
+                        background_checking=not complete if claude_foreground else saved['offset'] < info.st_size,
+                        background_observable=not saved['history_error'] if claude_foreground else True,
+                        background_output_bytes=output_bytes, background_revision=saved['revision'],
+                        foreground_running=saved['foreground'] if not claude_foreground or saved['foreground_observable'] else None,
+                        foreground_event=saved.get('foreground_event'),
+                        foreground_event_offset=saved.get('foreground_position'),
+                        foreground_observable=saved.get('foreground_observable') if claude_foreground else None)
         except OSError:
             return self.read_path(None)
 
@@ -983,13 +1189,28 @@ class ClaudeBackgroundWatcher:
 def apply_claude_background(result, background):
     screen_state = result.get('foreground_screen_state', result['state'])
     workflows = result.get('background_workflows', 0)
-    background = dict(background, background_count=background['background_count'] + workflows)
+    ui_agents = result.get('background_ui_agents', 0)
+    log_agents = background.get('background_agents', 0)
+    background = dict(background, background_count=background['background_count'] + workflows + max(0, ui_agents - log_agents),
+                      background_agents=max(log_agents, ui_agents))
     result.update(background)
     if result['state'] in ('idle', 'running', 'unknown') and not result.get('error_kind'):
-        if background['background_checking']:
-            if result['state'] != 'running':
+        foreground = background.get('foreground_running')
+        verified = background.get('foreground_observable') is True
+        if background.get('foreground_observable') is False:
+            foreground = None
+        completed = verified and foreground is False and background.get('foreground_event') == 'turn_complete'
+        if verified and foreground is True:
+            result.update(state='running', status='运行中', working=result.get('working') or '主对话尚未结束')
+        elif ui_agents:
+            # A current footer describes unfinished children after the root's
+            # final answer; that root completion cannot finish its children.
+            result.update(state='running', status='子智能体运行中（{}）'.format(background['background_agents']),
+                          working='等待 {} 个后台子智能体完成'.format(background['background_agents']))
+        elif background['background_checking']:
+            if completed or result['state'] != 'running':
                 result.update(state='unknown', status='正在核对后台任务', working='')
-        elif workflows or background.get('background_agents', 0):
+        elif background.get('background_agents', 0) or workflows and not completed:
             if workflows and not background.get('background_agents', 0):
                 result.update(state='running', status='后台工作流运行中（{}）'.format(workflows),
                               working='等待 {} 个后台工作流完成'.format(workflows))
@@ -998,9 +1219,17 @@ def apply_claude_background(result, background):
                               working='等待子智能体完成')
             else:
                 result['status'] = '运行中 · 子智能体 {}'.format(background.get('background_agents', 0)) if not workflows else result['status']
-        elif background.get('foreground_running') is True:
+        elif completed and workflows:
+            # An old visible workflow line cannot overturn a newer root-log
+            # completion, but unverified workflow work must not become idle.
+            result.update(state='unknown', status='前台已结束，后台工作流待核实', working='')
+        elif completed:
+            result.update(state='idle', status='等待输入', working='')
+        elif background.get('foreground_observable') is False and screen_state != 'running':
+            result.update(state='unknown', status='前台状态待核实', working='')
+        elif foreground is True:
             result.update(state='running', status='运行中', working=result.get('working') or '主对话尚未结束')
-        elif background.get('foreground_running') is False and screen_state != 'running':
+        elif foreground is False and screen_state != 'running':
             result.update(state='idle', status='等待输入', working='')
         elif background.get('background_observable') is False and result['state'] == 'idle':
             result.update(state='unknown', status='后台状态待核实')
@@ -1174,6 +1403,7 @@ CODEX_COMPLETIONS = ClaudeCompletionGuard()
 # Limit history work to leave room for the live 0.5s remote refresh.
 # Local reads use the larger default.
 USAGE_LOGS = UsageLogWatcher(max_bytes=262144)
+RESOURCE_SAMPLES = AsyncProcessResources()
 KNOWN_AGENTS = {}
 
 
@@ -1233,6 +1463,17 @@ def snapshot(socket, selected):
                           fingerprint=hashlib.sha256(screen.encode()).hexdigest(),
                           process_id=pid, event_source=has_events, lifecycle_events=events, lifecycle_cursor=lifecycle_cursor,
                           telemetry=USAGE_LOGS.sample(usage_path, agent), **result))
+    resources = RESOURCE_SAMPLES.sample_all([pane.get('process_id') for pane in panes], processes)
+    owners = {}
+    for pane in panes:
+        owners.setdefault(pane.get('process_id'), set()).add(pane['session'])
+    for pane in panes:
+        value = resources.get(pane.get('process_id'))
+        if value is not None:
+            value = dict(value)
+            if len(owners.get(pane.get('process_id'), ())) > 1:
+                value.update(scope='shared_process', shared_sessions=len(owners[pane['process_id']]))
+        pane['resources'] = value
     return dict(panes=panes, sampled_at=time.time(), collection_ms=round((time.monotonic() - started) * 1000))
 
 

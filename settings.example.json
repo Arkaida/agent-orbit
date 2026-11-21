@@ -14,6 +14,8 @@
   "wave_palette": "theme",
   "wave_height": 1.3,
   "wave_density": 1.0,
+  "wave_resources": true,
+  "wave_sensitivity": 1.0,
   "pinned": true,
   "sound": true,
   "completion_sound": true,
