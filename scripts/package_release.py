@@ -37,7 +37,7 @@ files = [ROOT / name for name in ('agent-orbit', 'codex-remote', 'shortcuts.zsh'
                                  '.gitignore', 'settings.example.json')]
 files += [ROOT / name for name in ('agent_orbit_cli.py', 'configuration.py', 'local_probe.py', 'remote_probe.py', 'monitor.py',
                                  'desktop_bridge.py', 'desktop_launch.py', 'completion_tracker.py', 'response_tracker.py', 'resource_probe.py', 'remote_bundle.py',
-                                 'activity_tracker.py', 'usage_tracker.py', 'error_tracker.py')]
+                                 'activity_tracker.py', 'manual_tracker.py', 'usage_tracker.py', 'error_tracker.py')]
 files += sorted(ROOT.glob('test_*.py'))
 for folder in ('desktop', 'docs', 'scripts', '.github'):
     files += [path for path in (ROOT / folder).rglob('*') if path.is_file() and '__pycache__' not in path.parts]

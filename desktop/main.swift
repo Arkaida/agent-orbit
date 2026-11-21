@@ -80,6 +80,13 @@ struct Pane: Decodable, Identifiable {
     var responseGroup: SessionResponseGroup?
     var usageMetrics: UsageMetrics?
     var resources: ResourceMetrics?
+    var manualRunning: Bool?
+    var manualOverrideId: String?
+    var resultMarker: String?
+    var displayStatus: String { manualRunning == true && state == "running" ? "手动运行中" : status }
+    var manualRunningHelp: String? {
+        manualRunning == true ? "手动运行标记有效；收到新的回复结果后自动解除。错误或离线状态仍优先显示。" : nil
+    }
     var effectiveResponse: SessionResponse? { responseGroup?.response ?? response }
     var responseMonitorKey: String { responseGroup.map { "group:" + $0.id } ?? (source ?? "remote") + ":" + monitorKey }
     var responseEpisodeKey: String? {
@@ -371,6 +378,8 @@ struct SessionUnit: Identifiable {
         pane.status = (labels[state] ?? "待核实") + " · \(Set(rows.map(\.monitorKey)).count) 会话"
         pane.attentionLevel = state == .error ? "error" : state == .attention ? "warning" : nil
         pane.responseGroup = group; pane.response = group?.response
+        pane.manualRunning = rows.contains { $0.manualRunning == true }
+        pane.manualOverrideId = rows.compactMap(\.manualOverrideId).first
         pane.source = nil; pane.threadId = nil
         let agents = Set(rows.compactMap(\.agent)); pane.agent = agents.count == 1 ? agents.first : nil
         pane.preview = []; pane.working = nil
@@ -381,6 +390,51 @@ struct SessionUnit: Identifiable {
         pane.errorSummary = errors.isEmpty ? nil : errors.joined(separator: "；")
         pane.usageMetrics = UsageMetrics.combining(rows)
         return pane
+    }
+}
+
+enum ManualRunAction: String, Codable { case running, clear }
+
+struct ManualRunTarget: Equatable {
+    var key: String
+    var members: [String]
+}
+
+/// The collector consumes fresh command IDs; it owns lifecycle and timing changes.
+struct ManualRunCommand: Codable {
+    var id: String
+    var action: ManualRunAction
+    var target: String
+    var members: [String]
+    var createdAt: String
+    enum CodingKeys: String, CodingKey { case id, action, target, members; case createdAt = "created_at" }
+    init(action: ManualRunAction, target: ManualRunTarget) {
+        id = UUID().uuidString
+        self.action = action
+        self.target = target.key
+        members = Array(Set(target.members)).sorted()
+        createdAt = ISO8601DateFormatter().string(from: Date())
+    }
+}
+
+struct ManualRunCommandQueue: Codable {
+    var version = 1
+    var commands: [ManualRunCommand] = []
+    static let capacity = 128
+    static func append(_ command: ManualRunCommand, at url: URL) throws {
+        var queue = ManualRunCommandQueue()
+        if FileManager.default.fileExists(atPath: url.path) {
+            queue = try JSONDecoder().decode(Self.self, from: Data(contentsOf: url))
+            guard queue.version == 1 else {
+                throw NSError(domain: "AgentOrbit.ManualRun", code: 1,
+                              userInfo: [NSLocalizedDescriptionKey: "手动运行命令格式不兼容"])
+            }
+        }
+        queue.commands.append(command)
+        queue.commands = Array(queue.commands.suffix(capacity))
+        let encoder = JSONEncoder()
+        encoder.outputFormatting = [.prettyPrinted, .sortedKeys, .withoutEscapingSlashes]
+        try encoder.encode(queue).write(to: url, options: .atomic)
     }
 }
 
@@ -837,6 +891,17 @@ final class PanelModel: ObservableObject {
         unread.removeAll()
         unreadErrors.removeAll()
         onUpdate?()
+    }
+
+    func requestManualRunning(_ action: ManualRunAction, target: ManualRunTarget) {
+        guard !target.key.isEmpty, !target.members.isEmpty else { return }
+        do {
+            try ManualRunCommandQueue.append(ManualRunCommand(action: action, target: target),
+                                             at: dataRoot.appendingPathComponent("manual-overrides.json"))
+        } catch {
+            message = "无法保存手动运行标记：\(error.localizedDescription)"
+            onUpdate?()
+        }
     }
 
     func saveFollow(_ text: String) throws {

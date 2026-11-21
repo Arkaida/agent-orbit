@@ -216,6 +216,58 @@ private final class SessionUnitTestSuite {
         check(overflow?.totalTokens == nil && overflow?.windowTokens == nil && overflow?.windowOutputTokens == nil,
               "An unrepresentable aggregate integer must stay unknown instead of overflowing or wrapping")
     }
+
+    func manualCommandContract() throws {
+        var marked = try pane("running", group: group("running"))
+        marked.manualRunning = true
+        marked.manualOverrideId = "synthetic-override"
+        check(marked.displayStatus == "手动运行中", "Confirmed override must be named in running status")
+        check(marked.visualState(connected: false) == .offline, "Manual marking cannot conceal disconnection")
+        marked.state = "error"
+        check(marked.visualState(connected: true) == .error, "Manual marking cannot conceal an error")
+        let summary = SessionUnit(id: marked.orbitKey, rows: [marked]).summaryPane(connected: { _ in true })
+        check(summary?.manualRunning == true && summary?.manualOverrideId == "synthetic-override",
+              "Grouped summaries must preserve confirmed manual metadata")
+        let decoded = try decode(["pane_id": "%manual", "session": "synthetic", "state": "running", "status": "running", "preview": [],
+                                  "manual_running": true, "manual_override_id": "override", "result_marker": "result"], as: Pane.self)
+        check(decoded.manualRunning == true && decoded.manualOverrideId == "override" && decoded.resultMarker == "result",
+              "Collector manual/result fields must decode through the actual snake-case DTO")
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent("agent-orbit-manual-tests-" + UUID().uuidString)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let url = directory.appendingPathComponent("manual-overrides.json")
+        let target = ManualRunTarget(key: "group:synthetic", members: ["local:b", "remote:a", "local:b"])
+        let mark = ManualRunCommand(action: .running, target: target)
+        let clear = ManualRunCommand(action: .clear, target: target)
+        try ManualRunCommandQueue.append(mark, at: url)
+        try ManualRunCommandQueue.append(clear, at: url)
+        let queue = try JSONDecoder().decode(ManualRunCommandQueue.self, from: Data(contentsOf: url))
+        check(queue.version == 1 && queue.commands.map(\.action) == [.running, .clear],
+              "Rapid mark then cancel must preserve ordered commands instead of replacing one slot")
+        check(queue.commands.map(\.id) == [mark.id, clear.id] && UUID(uuidString: mark.id) != nil && mark.id != clear.id,
+              "Each queued command needs an independently consumable UUID")
+        check(queue.commands.allSatisfy { $0.target == target.key && $0.members == ["local:b", "remote:a"] },
+              "Command membership must be stable, deduplicated and complete")
+        let json = try JSONSerialization.jsonObject(with: Data(contentsOf: url)) as? [String: Any]
+        let first = (json?["commands"] as? [[String: Any]])?.first
+        check(first?["created_at"] is String && first?["action"] as? String == "running", "Queue JSON must match the Python contract")
+        var filled = ManualRunCommandQueue()
+        filled.commands = (0..<ManualRunCommandQueue.capacity).map { _ in ManualRunCommand(action: .running, target: target) }
+        try JSONEncoder().encode(filled).write(to: url, options: .atomic)
+        try ManualRunCommandQueue.append(clear, at: url)
+        let bounded = try JSONDecoder().decode(ManualRunCommandQueue.self, from: Data(contentsOf: url))
+        check(bounded.commands.count == 128 && bounded.commands.last?.id == clear.id && bounded.commands.first?.id == filled.commands[1].id,
+              "Bounded queues must keep the newest command without reordering remaining IDs")
+        let invalid = Data("{\"version\":2,\"commands\":[]}".utf8)
+        try invalid.write(to: url, options: .atomic)
+        do {
+            try ManualRunCommandQueue.append(mark, at: url)
+            check(false, "Incompatible command files must not be silently overwritten")
+        } catch {
+            let preserved = try Data(contentsOf: url)
+            check(preserved == invalid, "A refused queue update must preserve its original contents")
+        }
+    }
 }
 
 @main
@@ -227,6 +279,7 @@ private struct SessionUnitTests {
             try suite.groupedStatePrecedence()
             try suite.rootUsageCombination()
             try suite.liveCoverageAndExactFormatting()
+            try suite.manualCommandContract()
         } catch {
             suite.failures.append("Synthetic model decoding failed: \(error)")
         }

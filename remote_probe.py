@@ -772,6 +772,162 @@ class UsageLogWatcher:
             return self.result(saved, agent) if saved is not None else self.empty(agent)
 
 
+class ResultLogWatcher:
+    """Stable root reply markers, separate from lifecycle alerts and activity.
+
+    Repeated reads/reconnects return the same final marker.  A bounded history
+    gap, malformed suffix or partial record remains unobservable until a newer
+    verified result establishes a baseline; no text, tools or token counters
+    are used as a substitute for a final reply.
+    """
+    def __init__(self, max_bytes=1048576):
+        self.max_bytes = max_bytes
+        self.files = {}
+
+    @staticmethod
+    def empty():
+        return dict(result_identity=None, result_marker=None, result_observable=False)
+
+    @staticmethod
+    def decode(item, agent):
+        if item.get('isSidechain'):
+            return None, None
+        kind = item.get('type')
+        if agent == 'codex':
+            payload = item.get('payload')
+            if not isinstance(payload, dict):
+                return None, None
+            subtype = payload.get('type')
+            if kind == 'event_msg' and subtype in ('task_started', 'turn_started'):
+                return 'start', None
+            if kind == 'event_msg' and subtype in ('task_complete', 'turn_complete'):
+                return 'complete', None
+            return None, None
+        if agent != 'claude':
+            return None, None
+        message = item.get('message')
+        content = message.get('content') if isinstance(message, dict) else None
+        if kind == 'api-request' and item.get('querySource') in (None, 'repl_main_thread'):
+            return 'start', None
+        if kind == 'user' and not item.get('isMeta'):
+            texts = content if isinstance(content, str) else '\n'.join(
+                block.get('text', '') for block in content if isinstance(block, dict)
+                and isinstance(block.get('text'), str)) if isinstance(content, list) else ''
+            if texts.strip() and '<task-notification>' not in texts and not texts.startswith('[Request interrupted by user'):
+                return 'start', None
+        if kind == 'assistant' and not item.get('isApiErrorMessage') and isinstance(message, dict) and message.get('stop_reason') == 'end_turn':
+            text = content if isinstance(content, str) else '\n'.join(
+                block.get('text', '') for block in content if isinstance(block, dict) and
+                block.get('type') == 'text' and isinstance(block.get('text'), str)) if isinstance(content, list) else ''
+            if text.strip():
+                return 'reply', message.get('id')
+        return None, None
+
+    def sample(self, path, agent):
+        if path is None or agent not in ('codex', 'claude'):
+            return self.empty()
+        path = os.fsdecode(os.fspath(path))
+        if agent == 'claude' and ('subagents' in path.replace('\\', '/').split('/') or os.path.basename(path).startswith('agent-')):
+            return self.empty()
+        try:
+            with open(path, 'rb') as log:
+                info = os.fstat(log.fileno())
+                first = log.readline(1048576)
+                metadata = json.loads(first)
+                if not isinstance(metadata, dict):
+                    return self.empty()
+                if agent == 'codex':
+                    payload = metadata.get('payload') or {}
+                    if (metadata.get('type') != 'session_meta' or not isinstance(payload, dict) or
+                            not isinstance(payload.get('source'), str) or not payload['source'].strip()):
+                        return self.empty()
+                elif metadata.get('isSidechain'):
+                    return self.empty()
+                key = (info.st_dev, info.st_ino, hashlib.sha256(first).hexdigest())
+                identity = hashlib.sha256(('{}:{}:{}'.format(agent, path, key)).encode()).hexdigest()
+                saved = self.files.get((agent, path))
+                reset = saved is None or saved['key'] != key
+                replaced = False
+                if not reset:
+                    replaced = info.st_size < saved['offset']
+                    if not replaced and saved['anchor']:
+                        log.seek(saved['offset'] - len(saved['anchor']))
+                        replaced = log.read(len(saved['anchor'])) != saved['anchor']
+                    reset = replaced
+                if reset:
+                    if replaced:
+                        log.seek(max(0, info.st_size - 64))
+                        stamp = hashlib.sha256(first + str(info.st_size).encode() + log.read(64)).hexdigest()
+                        identity += ':' + stamp
+                    start = max(0, info.st_size - self.max_bytes)
+                    saved = dict(key=key, identity=identity, offset=start, buffer=b'', anchor=b'',
+                                 marker=None, answered=False, reply_ids=set(), observable=start == 0)
+                    self.files[(agent, path)] = saved
+                    if start:
+                        log.seek(start - 1)
+                        if log.read(1) != b'\n':
+                            log.readline(self.max_bytes)
+                            saved['offset'] = log.tell()
+                elif info.st_size - saved['offset'] > self.max_bytes:
+                    log.seek(info.st_size - self.max_bytes - 1)
+                    if log.read(1) != b'\n':
+                        log.readline(self.max_bytes)
+                    saved.update(offset=log.tell(), buffer=b'', observable=False, answered=False)
+                log.seek(saved['offset'])
+                incoming = log.read(self.max_bytes)
+                begin = saved['offset'] - len(saved['buffer'])
+                data = saved['buffer'] + incoming
+                saved['offset'] = log.tell()
+                saved['anchor'] = (saved['anchor'] + incoming)[-64:]
+                at_end = saved['offset'] == info.st_size
+            pieces = data.split(b'\n')
+            saved['buffer'] = pieces.pop()
+            if at_end and saved['buffer']:
+                try:
+                    json.loads(saved['buffer'])
+                except (ValueError, TypeError):
+                    pass
+                else:
+                    pieces.append(saved['buffer']); saved['buffer'] = b''
+            position = begin
+            for line in pieces:
+                if line.strip():
+                    try:
+                        item = json.loads(line)
+                        if not isinstance(item, dict):
+                            raise ValueError('Not a root record')
+                        kind, reply_id = self.decode(item, agent)
+                    except (ValueError, TypeError, AttributeError, RecursionError):
+                        saved['observable'] = False
+                        position += len(line) + 1
+                        continue
+                    if kind == 'start':
+                        saved['answered'] = False
+                    elif kind == 'reply':
+                        duplicate = isinstance(reply_id, str) and reply_id in saved['reply_ids']
+                        if not duplicate:
+                            saved['marker'] = ('message:' + hashlib.sha256(reply_id.encode()).hexdigest()
+                                               if isinstance(reply_id, str) and reply_id else
+                                               '{}:{}'.format(position, hashlib.sha256(line).hexdigest()))
+                            saved['observable'] = True
+                            saved['answered'] = True
+                            if isinstance(reply_id, str):
+                                saved['reply_ids'].add(reply_id)
+                    elif kind == 'complete' and not saved['answered']:
+                        saved['marker'] = '{}:{}'.format(position, hashlib.sha256(line).hexdigest())
+                        saved['observable'], saved['answered'] = True, True
+                position += len(line) + 1
+            if len(saved['buffer']) > self.max_bytes:
+                saved['buffer'] = b''
+                saved['observable'] = False
+            if len(self.files) > 100:
+                self.files = {(agent, path): saved}
+            return dict(result_identity=saved['identity'], result_marker=saved['marker'],
+                        result_observable=bool(saved['observable'] and at_end and not saved['buffer']))
+        except (OSError, ValueError, TypeError, AttributeError, RecursionError):
+            return self.empty()
+
+
 class RolloutWatcher:
     """Read only new lifecycle events from an unambiguous CLI root log.
 
@@ -1403,6 +1559,7 @@ CODEX_COMPLETIONS = ClaudeCompletionGuard()
 # Limit history work to leave room for the live 0.5s remote refresh.
 # Local reads use the larger default.
 USAGE_LOGS = UsageLogWatcher(max_bytes=262144)
+RESULT_LOGS = ResultLogWatcher()
 RESOURCE_SAMPLES = AsyncProcessResources()
 KNOWN_AGENTS = {}
 
@@ -1462,7 +1619,7 @@ def snapshot(socket, selected):
                           command=command, agent=agent, cwd=cwd, screen=screen,
                           fingerprint=hashlib.sha256(screen.encode()).hexdigest(),
                           process_id=pid, event_source=has_events, lifecycle_events=events, lifecycle_cursor=lifecycle_cursor,
-                          telemetry=USAGE_LOGS.sample(usage_path, agent), **result))
+                          telemetry=USAGE_LOGS.sample(usage_path, agent), **RESULT_LOGS.sample(usage_path, agent), **result))
     resources = RESOURCE_SAMPLES.sample_all([pane.get('process_id') for pane in panes], processes)
     owners = {}
     for pane in panes:

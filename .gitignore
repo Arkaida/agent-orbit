@@ -14,6 +14,7 @@ Codex Remote.app/
 follow.json
 settings.json
 settings.local.json
+manual-overrides.json
 .env
 .DS_Store
 install-baseline.json

@@ -189,8 +189,9 @@ struct PaneCard: View {
                     .background(RoundedRectangle(cornerRadius: 4).fill((agent == "claude" ? ThemePalette.ui(.secondaryAccent) : ThemePalette.ui(.accent)).opacity(0.09)))
             }
             Spacer(minLength: 0)
-            Text(isAvailable ? pane.status : "上次：" + pane.status).font(.system(size: 9, weight: .medium))
+            Text(isAvailable ? pane.displayStatus : "上次：" + pane.displayStatus).font(.system(size: 9, weight: .medium))
                 .foregroundColor(color).lineLimit(1).minimumScaleFactor(0.85)
+                .help(pane.manualRunningHelp ?? pane.status)
         }
     }
     var response: SessionResponse? { isAvailable && !pane.isCritical ? pane.response : nil }

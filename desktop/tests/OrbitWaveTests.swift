@@ -11,8 +11,12 @@ final class PanelModel {
     var followed: [String] = []
     var message = "Synthetic orbit wave fixture"
     var disconnectedSources = Set<String>()
+    var manualRequests: [(ManualRunAction, ManualRunTarget)] = []
     func isConnected(_ pane: Pane) -> Bool {
         connected && !disconnectedSources.contains(pane.source ?? "remote")
+    }
+    func requestManualRunning(_ action: ManualRunAction, target: ManualRunTarget) {
+        manualRequests.append((action, target))
     }
 }
 
@@ -329,6 +333,112 @@ private final class OrbitWaveTestSuite {
             check(false, "Common-baseline geometry requires the two-circle fixture")
         }
     }
+
+    func manualRunMenusAndHitTesting() throws {
+        preferences.set(false, forKey: "orbitMiniMode")
+        var alpha = try pane("alpha", state: "idle")
+        alpha.manualRunning = false
+        let shared = group(id: "manual-pair")
+        var beta = try pane("beta", group: shared)
+        beta.manualRunning = true
+        beta.manualOverrideId = "synthetic-manual"
+        let gamma = try pane("gamma", group: shared)
+        let (model, view) = fixture([alpha, beta, gamma])
+        let rings = field(view, "rings").map { Array(Mirror(reflecting: $0).children.map(\.value)) } ?? []
+        guard let ring = rings.first, let radius = field(ring, "radius") as? CGFloat,
+              let indices = field(ring, "indices") as? [Int], !indices.isEmpty else {
+            check(false, "Menu fixture must have a populated name ring"); return
+        }
+        let phase = field(ring, "phase") as? CGFloat ?? 0
+        let center = NSPoint(x: view.bounds.midX, y: view.bounds.midY)
+        func point(_ slot: Int) -> NSPoint {
+            let angle = CGFloat.pi / 2 - CGFloat(slot) * .pi * 2 / CGFloat(indices.count) + phase
+            return NSPoint(x: center.x + cos(angle) * radius, y: center.y + sin(angle) * radius)
+        }
+        func event(_ type: NSEvent.EventType, at location: NSPoint) -> NSEvent {
+            NSEvent.mouseEvent(with: type, location: view.convert(location, to: nil), modifierFlags: [],
+                               timestamp: 0, windowNumber: 0, context: nil, eventNumber: 1,
+                               clickCount: 1, pressure: 0)!
+        }
+        func manual(_ menu: NSMenu?, _ prefix: String) -> NSMenuItem? {
+            menu?.items.first { $0.identifier?.rawValue.hasPrefix(prefix) == true }
+        }
+        let key0 = view.targetKey(at: point(0))
+        let key1 = view.targetKey(at: point(1))
+        check(key0 != nil && key1 != nil && key0 != key1, "Each label sector must resolve its own target")
+        check(view.targetKey(at: center) == nil, "The center must never impersonate a chat label")
+        view.mouseMoved(with: event(.mouseMoved, at: point(0)))
+        let menu = view.menu(for: event(.rightMouseDown, at: point(1)))
+        let mark = manual(menu, "manual.running.")
+        let clear = manual(menu, "manual.clear.")
+        let target = mark?.representedObject as? ManualRunTarget
+        check(target?.key == key1 && target?.key != key0,
+              "Right-click must use its event position even when another chat is still hovered")
+        if let mark = mark, let action = mark.action { _ = NSApp.sendAction(action, to: mark.target, from: mark) }
+        if let clear = clear, let action = clear.action { _ = NSApp.sendAction(action, to: clear.target, from: clear) }
+        check(model.manualRequests.count == 2 && model.manualRequests[0].0 == .running && model.manualRequests[1].0 == .clear,
+              "Actual native menu actions must send mark and cancellation independently")
+        check(model.manualRequests.allSatisfy { $0.1.key == key1 }, "Both actions must retain the clicked identity")
+        let groupSlot = key0 == "group:manual-pair" ? 0 : 1
+        let groupMenu = view.menu(for: event(.rightMouseDown, at: point(groupSlot)))
+        let groupMark = manual(groupMenu, "manual.running.")
+        check((groupMark?.representedObject as? ManualRunTarget)?.members == ["remote:beta", "remote:gamma"],
+              "A grouped target must include every member monitor key")
+        check(groupMark?.state == .on, "Confirmed manual state must appear as a checked menu action")
+        check(groupMenu?.items.first?.title == (shared["name"] as? String), "Group menu must retain the complete configured name")
+        let nodes = field(view, "nodes").map { Array(Mirror(reflecting: $0).children.map(\.value)) } ?? []
+        check(nodes.contains { (field($0, "key") as? String) == "group:manual-pair" && (field($0, "status") as? String) == "手动运行中" },
+              "A confirmed running override must have a compact manual status")
+        if let menu = view.menu(for: event(.rightMouseDown, at: center)), let toggle = menu.items.last, let action = toggle.action {
+            _ = NSApp.sendAction(action, to: toggle.target, from: toggle)
+        }
+        check(view.targetKey(at: point(0)) == nil, "Mini mode must not invent a hidden label hit")
+        let mini = view.menu(for: event(.rightMouseDown, at: NSPoint(x: view.bounds.midX, y: view.bounds.midY)))
+        let targets = mini?.items.first { $0.title == "会话与互斥组" }?.submenu
+        check(targets?.items.count == 2 && targets?.items.allSatisfy { $0.submenu?.items.count == 2 } == true,
+              "Mini mode must expose each chat/group with mark and clear submenus")
+        check(targets?.items.contains { $0.title.contains("Synthetic long grouped session") } == true,
+              "Mini target menus must retain long group names")
+        preferences.set(false, forKey: "orbitMiniMode")
+    }
+
+    func partialGroupManualMenus() throws {
+        preferences.set(false, forKey: "orbitMiniMode")
+        var shared = group(id: "partial-pair")
+        shared["members"] = ["remote:visible", "local:excluded"]
+        shared["known_members"] = 1
+        let visible = try pane("visible", group: shared)
+        let (model, view) = fixture([visible])
+        let rings = field(view, "rings").map { Array(Mirror(reflecting: $0).children.map(\.value)) } ?? []
+        guard let ring = rings.first, let radius = field(ring, "radius") as? CGFloat else {
+            check(false, "Partial-group fixture must have a name ring"); return
+        }
+        let phase = field(ring, "phase") as? CGFloat ?? 0
+        let point = NSPoint(x: view.bounds.midX + cos(.pi / 2 + phase) * radius,
+                            y: view.bounds.midY + sin(.pi / 2 + phase) * radius)
+        func event(at point: NSPoint) -> NSEvent {
+            NSEvent.mouseEvent(with: .rightMouseDown, location: view.convert(point, to: nil), modifierFlags: [],
+                               timestamp: 0, windowNumber: 0, context: nil, eventNumber: 1,
+                               clickCount: 1, pressure: 0)!
+        }
+        let menu = view.menu(for: event(at: point))
+        let actions = menu?.items.filter { $0.identifier?.rawValue.hasPrefix("manual.") == true } ?? []
+        check(actions.count == 2, "A partially visible group must expose both native manual actions")
+        check(actions.allSatisfy { ($0.representedObject as? ManualRunTarget)?.members == ["local:excluded", "remote:visible"] },
+              "Native mark and clear targets must keep configured group members absent from current rows")
+        for item in actions {
+            if let action = item.action { _ = NSApp.sendAction(action, to: item.target, from: item) }
+        }
+        check(model.manualRequests.count == 2 && model.manualRequests.allSatisfy {
+            $0.1.key == "group:partial-pair" && $0.1.members == ["local:excluded", "remote:visible"]
+        }, "Actual menu actions must send the complete mixed-source group to backend validation")
+        shared["members"] = []
+        model.rows = [try pane("visible", group: shared)]
+        view.update(model)
+        let fallback = view.menu(for: event(at: point))?.items.first { $0.identifier?.rawValue.hasPrefix("manual.running.") == true }
+        check((fallback?.representedObject as? ManualRunTarget)?.members == ["remote:visible"],
+              "An absent or empty configured membership must fall back to observed monitor keys")
+    }
 }
 
 @main @MainActor
@@ -345,6 +455,8 @@ struct OrbitWaveTests {
         try suite.independentStateGates()
         try suite.nameRingsAndExactTiming()
         try suite.timingFractionsAndCommonBaseline()
+        try suite.manualRunMenusAndHitTesting()
+        try suite.partialGroupManualMenus()
         if !suite.failures.isEmpty {
             for failure in suite.failures { fputs("FAIL: " + failure + "\n", stderr) }
             suite.cleanUp()

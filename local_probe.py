@@ -11,7 +11,7 @@ import subprocess
 import sys
 import time
 
-from remote_probe import EMPTY_ISSUE, UsageLogWatcher, detect_failure, issue
+from remote_probe import EMPTY_ISSUE, ResultLogWatcher, UsageLogWatcher, detect_failure, issue
 from resource_probe import AsyncProcessResources
 
 LIFECYCLE = frozenset(('task_started', 'turn_started', 'task_complete', 'turn_complete',
@@ -57,6 +57,7 @@ class LocalCollector:
         self.limit, self.runner = limit, runner
         self.files, self.discovery = {}, []
         self.usage = UsageLogWatcher()
+        self.results = ResultLogWatcher()
         self.resources = AsyncProcessResources()
         self.processes = {}
         self.next_discovery = 0
@@ -197,6 +198,7 @@ class LocalCollector:
                              fingerprint=hashlib.sha256((last + '\n'.join(state['preview'])).encode()).hexdigest(),
                              lifecycle_cursor=dict(path=str(session['path']), device=state['identity'][0], inode=state['identity'][1], offset=state['offset']),
                              telemetry=self.usage.sample(session['path'], 'codex'),
+                             **self.results.sample(session['path'], 'codex'),
                              **state['failure']))
         samples = self.resources.sample_all([row['process_id'] for row in rows], self.processes)
         owners = {}

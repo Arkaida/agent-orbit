@@ -11,6 +11,7 @@ from completion_tracker import CompletionTracker
 from activity_tracker import ActivityTracker
 from usage_tracker import UsageTracker
 from response_tracker import SessionResponseTracker
+from manual_tracker import ManualRunningTracker
 from error_tracker import ErrorTracker
 from monitor import Model, Stream, LocalStream
 from configuration import data_dir, defaults, load_settings, read_follow as configured_follow
@@ -113,7 +114,7 @@ class FeedState:
             self.generation += 1
         self.continuous = False
 
-    def accept(self, frame, selected, connection_id, now_mono, now_wall, max_gap_seconds=2):
+    def accept(self, frame, selected, connection_id, now_mono, now_wall, max_gap_seconds=2, transform=None):
         self.model.accept(frame, now_mono)
         if 'panes' not in frame:
             self.break_continuity()
@@ -121,7 +122,10 @@ class FeedState:
         if self.last_sample is not None and now_mono - self.last_sample > max_gap_seconds:
             self.break_continuity()
         epoch = (connection_id, self.generation, tuple(selected))
-        observed = self.activity.update(self.model.visible(selected), now_mono, epoch)
+        raw = self.model.visible(selected)
+        if transform is not None:
+            raw = transform(raw)
+        observed = self.activity.update(raw, now_mono, epoch)
         self.rows, completed = self.completions.update(observed, now_mono, now_wall, epoch=epoch)
         self.events = (self.events + completed)[-100:]
         alerts = self.attention.update(observed, now_wall, epoch=epoch, now_mono=now_mono)
@@ -188,6 +192,7 @@ def run(args):
     runtimes = {}
     usage = UsageTracker()
     responses = SessionResponseTracker()
+    manual = ManualRunningTracker(data_dir() / 'manual-overrides.json')
     next_config, config_error, stopping = 0, '', False
     # Invalid settings must still produce a first frame so the UI can explain
     # the error and recover when the user saves a corrected file. No source is
@@ -212,6 +217,7 @@ def run(args):
                     if args.socket is not None:
                         settings['tmux_socket'] = args.socket
                     responses.configure(settings)
+                    manual.configure(settings)
                     selected = read_follow(root)
                     desired = {}
                     if settings['remote_enabled']:
@@ -232,6 +238,14 @@ def run(args):
                 except (OSError, ValueError) as error:
                     config_error = str(error)
                 next_config = now + .5
+            known = []
+            for name, runtime in runtimes.items():
+                focus = selected if name == 'remote' else settings['local_followed']
+                health = connection_status(runtime['stream'], runtime['state'].model, config_error, now)
+                for row in runtime['state'].model.visible(focus if name == 'remote' else []):
+                    known.append(dict(row, source=name, available=health['connected'],
+                                      group_id=name + ':' + row['session'] if name == 'remote' else row.get('group_id', row['pane_id'])))
+            manual.poll(known)
             chunks, connections, discovered = [], [], []
             for name, runtime in runtimes.items():
                 stream, state = runtime['stream'], runtime['state']
@@ -246,8 +260,11 @@ def run(args):
                     sampled_at = time.monotonic()
                     sampled_wall = time.time()
                     sample_gap = max(2, stream.interval * 3)
+                    def apply_manual(rows):
+                        manual.observe(name, rows)
+                        return manual.apply(name, rows)
                     state.accept(frame, focus if name == 'remote' else [], stream.connections,
-                                 sampled_at, sampled_wall, max_gap_seconds=sample_gap)
+                                 sampled_at, sampled_wall, max_gap_seconds=sample_gap, transform=apply_manual)
                     if 'panes' in frame:
                         # Usage receives genuine collector samples only. The
                         # 10 Hz display payload below must never establish a
@@ -281,7 +298,7 @@ def run(args):
             payload.update(followed=selected, host=settings['host'] if settings['remote_enabled'] else '本机',
                            **health,
                            received_frames=sum(r['stream'].total_frames for r in runtimes.values()), emitted_at=time.time(),
-                           connections=connections, local_sessions=discovered)
+                           connections=connections, local_sessions=discovered, manual_overrides=manual.summary())
             metrics_at = time.monotonic()
             payload['rows'] = responses.annotate(payload['rows'], metrics_at, connections, settings)
             payload['metrics'] = usage.aggregate(payload['rows'], metrics_at, connections)

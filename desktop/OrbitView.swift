@@ -31,6 +31,8 @@ final class BubbleView: NSView {
         var idleFraction: CGFloat?
         var timingSummary: String
         var resources: ResourceState
+        var manualRunning: Bool
+        var manualTarget: ManualRunTarget
     }
     private struct ResourceState {
         var memoryBytes: Double?
@@ -111,6 +113,7 @@ final class BubbleView: NSView {
     private var waveSensitivity: CGFloat = 1
     private var tint = ThemePalette.ns(.accent)
     private var hoveredName: String?
+    private weak var model: PanelModel?
     private var tracking: NSTrackingArea?
     private var pressPoint: NSPoint?
     private var windowOrigin = NSPoint.zero
@@ -230,6 +233,7 @@ final class BubbleView: NSView {
     }
 
     func update(_ model: PanelModel) {
+        self.model = model
         let now = ProcessInfo.processInfo.systemUptime
         let wasConnected = connected
         connected = model.connected
@@ -299,7 +303,8 @@ final class BubbleView: NSView {
             let recent = rows.min { ($0.activityAge ?? .infinity) < ($1.activityAge ?? .infinity) }
             levels[name] = level
             let background = rows.reduce(0) { $0 + ($1.backgroundCount ?? 0) }
-            let status = !live ? (connectionState == "delayed" ? "等待更新" : "离线") : visualState == .error ? "异常" : visualState == .attention ? "待处理" : running ? "运行中" : waiting ? "等待输入" : "待核实"
+            let manualRunning = rows.contains { $0.manualRunning == true }
+            let status = !live ? (connectionState == "delayed" ? "等待更新" : "离线") : visualState == .error ? "异常" : visualState == .attention ? "待处理" : running ? (manualRunning ? "手动运行中" : "运行中") : waiting ? "等待输入" : "待核实"
             let summary: String
             if !live {
                 summary = ""
@@ -346,6 +351,8 @@ final class BubbleView: NSView {
             if timingPane.responseGroup?.kind == "running" && !running { timingSummary += "，组内有成员运行，等待提醒已暂停" }
             if timingPane.responseGroup?.parallelConflict == true { timingSummary += "，组内有并行运行" }
             let agents = Array(Set(rows.map { $0.agent == "claude" ? "Claude" : $0.agent == "codex" ? "Codex" : "CLI" })).sorted().joined(separator: " / ")
+            let configuredMembers = responseGroup?.members ?? []
+            let manualMembers = configuredMembers.isEmpty ? rows.map(\.monitorKey) : configuredMembers
             return Node(key: name, name: responseGroup?.name ?? pane.orbitName, agent: agents, status: status, summary: detail, visualState: visualState, level: level,
                         outputAge: running ? recent?.activityAge : nil, observedFor: now - (observingSince[name] ?? now), source: recent?.activitySource ?? "",
                         pending: live && !pending.isEmpty, responseKey: timingPane.responseMonitorKey,
@@ -353,7 +360,9 @@ final class BubbleView: NSView {
                         responseElapsed: live ? elapsed : nil, responseObserved: observed,
                         overdue: live && overdue, responseText: live ? responseText : "",
                         idleFraction: Self.idleFraction(idle: timing?.idleSeconds, run: timing?.runSeconds), timingSummary: timingSummary,
-                        resources: resourceState(rows.filter { model.isConnected($0) && $0.available != false }, expectedRows: rows.count))
+                        resources: resourceState(rows.filter { model.isConnected($0) && $0.available != false }, expectedRows: rows.count),
+                        manualRunning: manualRunning,
+                        manualTarget: ManualRunTarget(key: name, members: Array(Set(manualMembers)).sorted()))
         }
         levels = levels.filter { order.contains($0.key) }
         observingSince = observingSince.filter { order.contains($0.key) }
@@ -661,6 +670,7 @@ final class BubbleView: NSView {
             "\n细弧：等待色为空闲，运行色为工作" +
             (node.responseText.isEmpty ? "" : "\n" + node.responseText) +
             (node.summary.isEmpty ? "" : "\n" + node.summary) +
+            (node.manualRunning ? "\n手动运行标记有效；收到新的回复结果后自动解除，可右键取消。错误或离线优先显示。" : "") +
             (waveResources ? "\n" + resourceSummary(node.resources) : "")
     }
 
@@ -1383,18 +1393,23 @@ final class BubbleView: NSView {
             if hoveredName != nil { hoveredName = nil; needsDisplay = true }
             return
         }
-        let cursor = convert(event.locationInWindow, from: nil)
+        let hovered = targetKey(at: convert(event.locationInWindow, from: nil))
+        if hoveredName != hovered { hoveredName = hovered; updateToolTip(); needsDisplay = true }
+    }
+
+    /// Resolve the pointer's current label sector, independent of stale hover state.
+    func targetKey(at cursor: NSPoint) -> String? {
+        guard !miniMode else { return nil }
         let center = NSPoint(x: bounds.midX, y: bounds.midY)
         let dx = cursor.x - center.x, dy = cursor.y - center.y
         let radius = hypot(dx, dy)
         let theta = atan2(dy, dx)
-        var hovered: String?
         if let ring = rings.min(by: { abs($0.radius - radius) < abs($1.radius - radius) }), abs(ring.radius - radius) < 13, !ring.indices.isEmpty {
             let raw = (.pi / 2 + ring.phase - theta) * CGFloat(ring.indices.count) / (.pi * 2)
             let slot = (Int(raw.rounded()) % ring.indices.count + ring.indices.count) % ring.indices.count
-            hovered = nodes[ring.indices[slot]].key
+            return nodes[ring.indices[slot]].key
         }
-        if hoveredName != hovered { hoveredName = hovered; updateToolTip(); needsDisplay = true }
+        return nil
     }
     override func mouseExited(with event: NSEvent) { hoveredName = nil; updateToolTip(); needsDisplay = true }
 
@@ -1434,11 +1449,53 @@ final class BubbleView: NSView {
     override func menu(for event: NSEvent) -> NSMenu? {
         cancelSingleClick()
         let menu = NSMenu()
+        menu.autoenablesItems = false
+        if let key = targetKey(at: convert(event.locationInWindow, from: nil)), let node = nodes.first(where: { $0.key == key }) {
+            let heading = menu.addItem(withTitle: node.name, action: nil, keyEquivalent: "")
+            heading.isEnabled = false
+            addManualActions(to: menu, node: node)
+            menu.addItem(.separator())
+        } else if !nodes.isEmpty {
+            let targets = NSMenu(title: "会话与互斥组")
+            targets.autoenablesItems = false
+            for node in nodes {
+                let item = targets.addItem(withTitle: node.name + (node.manualRunning ? " · 手动" : ""), action: nil, keyEquivalent: "")
+                let actions = NSMenu(title: node.name)
+                actions.autoenablesItems = false
+                addManualActions(to: actions, node: node)
+                item.submenu = actions
+            }
+            let list = menu.addItem(withTitle: "会话与互斥组", action: nil, keyEquivalent: "")
+            list.submenu = targets
+            menu.addItem(.separator())
+        }
         let open = menu.addItem(withTitle: "打开面板", action: #selector(openPanel(_:)), keyEquivalent: "")
         open.target = self
         let toggle = menu.addItem(withTitle: miniMode ? "放大为完整会话环" : "缩小为小号悬浮球", action: #selector(toggleSize(_:)), keyEquivalent: "")
         toggle.target = self
         return menu
+    }
+
+    private func addManualActions(to menu: NSMenu, node: Node) {
+        let mark = menu.addItem(withTitle: "手动标为运行中", action: #selector(markManualRunning(_:)), keyEquivalent: "")
+        mark.target = self; mark.representedObject = node.manualTarget
+        mark.identifier = NSUserInterfaceItemIdentifier("manual.running." + node.key)
+        mark.state = node.manualRunning ? .on : .off
+        mark.toolTip = "收到新的回复结果后自动解除；不会遮蔽错误或离线状态。"
+        let clear = menu.addItem(withTitle: "取消手动运行", action: #selector(clearManualRunning(_:)), keyEquivalent: "")
+        clear.target = self; clear.representedObject = node.manualTarget
+        clear.identifier = NSUserInterfaceItemIdentifier("manual.clear." + node.key)
+        clear.toolTip = "恢复自动判断，也可撤回刚提交的手动标记。"
+    }
+
+    @objc private func markManualRunning(_ sender: NSMenuItem) {
+        guard let target = sender.representedObject as? ManualRunTarget else { return }
+        model?.requestManualRunning(.running, target: target)
+    }
+
+    @objc private func clearManualRunning(_ sender: NSMenuItem) {
+        guard let target = sender.representedObject as? ManualRunTarget else { return }
+        model?.requestManualRunning(.clear, target: target)
     }
 
     override func keyDown(with event: NSEvent) {
