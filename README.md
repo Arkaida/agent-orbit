@@ -14,7 +14,7 @@
 [![MIT](https://img.shields.io/badge/license-MIT-38d9ff)](LICENSE)
 [![Checks](https://github.com/Arkaida/agent-orbit/actions/workflows/ci.yml/badge.svg)](https://github.com/Arkaida/agent-orbit/actions/workflows/ci.yml)
 
-[**下载稳定版 5.2.6**](https://github.com/Arkaida/agent-orbit/releases/tag/v5.2.6) · [**声浪图解**](docs/WAVE_GUIDE.zh-CN.md) · [使用指南](docs/USAGE.zh-CN.md)
+[**下载稳定版 5.2.6**](https://github.com/Arkaida/agent-orbit/releases/tag/v5.2.6) · [**首次配置指南**](https://github.com/Arkaida/agent-orbit/blob/main/docs/GETTING_STARTED.zh-CN.md) · [声浪图解](docs/WAVE_GUIDE.zh-CN.md)
 
 <img src="docs/media/orbit-signals-hero.png" width="100%" alt="Agent Orbit main preview: a compact CLI monitor and floating session ring with four overlapping activity signals; fictional demo data">
 
@@ -22,7 +22,7 @@
 
 Agent Orbit 将你已有的 **CLI Agent 会话**放在桌面边缘：运行、等待输入、需要确认和异常，各有清楚的状态。无需反复切回终端，也能及时接住下一轮工作。
 
-A standalone native macOS monitor for **Codex CLI and Claude Code CLI**. Follow local or SSH/tmux sessions, see when they need input, and return to the original conversation. No Codex plugin, external Python or Node.js is required to run the app.
+A standalone native macOS monitor for **local Codex sessions and Linux SSH/tmux Codex CLI / Claude Code CLI sessions**. See when they need input and return to your work. No Codex plugin, external Python or Node.js is required to run the app.
 
 > **版本提示** · 稳定下载为 **5.2.6**。上图与下方「四路活动声浪」展示 **main 预览版 5.2.7 / build 33**，尚未发布新安装包；体验新声浪请从 main 构建。5.2.6 的下载包仍使用上一版资源声浪。[更新记录](docs/RELEASES.md)
 
@@ -64,17 +64,27 @@ A standalone native macOS monitor for **Codex CLI and Claude Code CLI**. Follow 
 - **数字有来源。** Token 取自 CLI 实际用量记录；工具速度按已返回结果计数。缺失与部分统计明确显示，不把未知数据补成零。
 - **保留人工纠正入口。** 右键会话或组可手动标为运行中，新回复结果到达后自动解除。异常、待确认和离线始终优先。
 
-## 三步开始
+## 第一次下载，如何配置
 
-1. 在 [**稳定版 5.2.6**](https://github.com/Arkaida/agent-orbit/releases/tag/v5.2.6) 下载 Apple Silicon `arm64` 应用 ZIP。Intel Mac 可从源码构建。
+1. 在 [**稳定版 5.2.6**](https://github.com/Arkaida/agent-orbit/releases/tag/v5.2.6) 的 **Assets** 下载 `Agent-Orbit-5.2.6-macos-arm64.zip`，用于 Apple Silicon Mac；Intel Mac 可从源码构建。`Source code` 不是可直接运行的应用。
 2. 解压，将 **Agent Orbit.app** 放到“应用程序”或常用目录，双击打开。运行环境已内置，支持 **macOS 13+**。
-3. 打开设置，选择本机关注会话；需要远端时填写已有 SSH 别名、tmux Socket 与关注列表。
+3. 先打开你要监控的 Agent 会话，再点小窗齿轮或菜单栏 **AO → 设置… → 监控**，按下面选择来源，最后点底部 **保存设置**。
 
-远端需要可无交互登录的 SSH，以及已有的 Python 3、tmux 和 Agent 会话。社区应用使用本地签名，尚未 Apple 公证；如系统阻止打开，请确认来源和校验值后，使用系统“隐私与安全性 → 仍要打开”流程。
+| 监控哪里 | 最少需要配置什么 | 成功标志 |
+| --- | --- | --- |
+| 本机 Codex | 默认已启用；数据目录通常为 `~/.codex`，保留“关注全部当前打开的本机会话”，保存 | 本机在线，出现已打开且可读取运行日志的 Codex 会话 |
+| Linux 远端 Codex / Claude | 先确认无交互 SSH、Python 3 和 tmux 可用；开启远端监控，填 SSH 别名，默认 Socket 留空，关注列表每行一个 tmux session 名，保存 | 远端在线，出现目标会话名 |
+| 本机和远端 | 同时保留两种来源开关，分别配置并保存 | 两种来源分别在线 |
+
+**新安装默认只监控本机 Codex，不包含本机 Claude。** 尚未打开 Agent 时空列表属于正常情况；Orbit 不会替你启动任务。远端 CLI 需要在 tmux 中运行。SSH 主机框填 `work-server` 或 `user@host`，不要填一整条 `ssh` 命令；关注列表留空表示该 Socket 下全部会话。
+
+第一次使用请按 [**首次配置指南**](https://github.com/Arkaida/agent-orbit/blob/main/docs/GETTING_STARTED.zh-CN.md) 操作：包含 SSH 配置示例、连接验证命令、会话名与 Socket 查找、逐项设置及常见问题，全程无需克隆源码或改 JSON。5.2.6 独立应用的“进入远端”按钮有打包依赖缺失，指南提供终端进入方法；main 已修复，需重新构建后生效。
+
+社区应用使用本地签名，尚未 Apple 公证；如系统阻止打开，请确认来源和校验值后，使用系统“隐私与安全性 → 仍要打开”流程。
 
 ### 从 main 体验新声浪
 
-在 macOS 上安装 Xcode Command Line Tools 与 Python 3.9+ 后：
+下载应用的用户可跳过此节。需要主分支预览或 Intel 构建时，在 macOS 上安装 Xcode Command Line Tools 与 Python 3.9+ 后：
 
 ```bash
 git clone https://github.com/Arkaida/agent-orbit.git
@@ -87,7 +97,7 @@ open 'Agent Orbit.app'
 
 ### 也可以从终端进入
 
-将 `source '/path/to/agent-orbit/shortcuts.zsh'` 加入 `~/.zshrc`，路径替换为项目位置：
+这是一项可选的源码用法；只下载 `.app` 不会自动安装 `ao`。取得项目源码后，将 `source '/path/to/agent-orbit/shortcuts.zsh'` 加入 `~/.zshrc`，路径替换为项目位置，并在当前终端执行同一行或新开一个终端：
 
 ```bash
 ao p                # 打开桌面应用
@@ -118,6 +128,7 @@ https://github.com/user-attachments/assets/13b256c0-9bb2-414b-a473-045c255d25ad
 
 | 使用 | 原理与开发 |
 | --- | --- |
+| [首次下载与配置](docs/GETTING_STARTED.zh-CN.md) | [常见连接问题](docs/GETTING_STARTED.zh-CN.md#按症状排查) |
 | [完整使用指南](docs/USAGE.zh-CN.md) | [状态判断规则](docs/STATUS.md) |
 | [声浪图解与常见问题](docs/WAVE_GUIDE.zh-CN.md) | [用量与资源指标](docs/METRICS.md) |
 | [等待提醒与互斥组](docs/RESPONSE.md) | [统一皮肤接口](docs/THEMING.md) |

@@ -5,4 +5,11 @@ export PYTHONNOUSERSITE=1
 unset PYTHONHOME PYTHONPATH
 runtime="$project_dir/Agent Orbit.app/Contents/Resources/python/bin/python3"
 if test -x "$runtime"; then exec "$runtime" "$project_dir/agent_orbit_cli.py" "$@"; fi
+# Inside a standalone app, engine/ and python/ share the Resources directory.
+case "$project_dir" in
+    */Contents/Resources/engine)
+        runtime="$project_dir/../python/bin/python3"
+        if test -x "$runtime"; then exec "$runtime" "$project_dir/agent_orbit_cli.py" "$@"; fi
+        ;;
+esac
 exec python3 "$project_dir/agent_orbit_cli.py" "$@"

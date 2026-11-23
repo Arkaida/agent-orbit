@@ -20,28 +20,44 @@ A small native macOS monitor for local Codex CLI and remote Codex CLI / Claude C
 - 用量总览显示会话运行占比、实时消耗、总消耗、上游输出速度及工具完成速度；支持本机 Codex 与远端 Codex / Claude，缺失与不完整统计会标明。
 - 只读采集、Python 标准库，无遥测、账户注册、HTTP 服务或远端 hooks。
 
-## 快速开始
+## 首次下载与配置
 
-直接使用发布版只需 **macOS 13+**，Python 运行环境已经内置；无需 Codex、Node.js 或任何插件来启动本应用。从源码构建时才需要 Python 3.9+ 和 Xcode Command Line Tools。远端模式另需可无交互登录的 SSH，以及远端 Python 3、tmux。本机采集使用系统 `ps` 和 `lsof`。
+第一次使用请按 [**从下载到看到第一条会话**](GETTING_STARTED.zh-CN.md) 操作，包含本机、Linux 远端两条完整流程、设置字段示例和连接排查。
+
+直接使用发布版只需 **macOS 13+**，Python 运行环境已经内置，无需克隆项目或构建。下载 Apple Silicon 的 `Agent-Orbit-5.2.6-macos-arm64.zip`，解压后把 `.app` 移至“应用程序”或常用目录，双击打开。启动 Orbit 无需 Codex 插件、Node.js 或外部 Python；被监控的 Codex / Claude 需要自行安装、登录并运行。
+
+点击面板右上角齿轮，或菜单栏 **AO → 设置… → 监控**。全新安装默认只开启本机 Codex；已有安装会沿用迁移后的配置。**改完必须点击底部“保存设置”**。
+
+- **本机 Codex：** 先打开实际会话；数据目录一般保留 `~/.codex`，自定义 `CODEX_HOME` 时填实际数据根目录，不是代码工程目录。首次保留“关注全部当前打开的本机会话”；自动发现依赖进程打开且可读的运行日志，不会导入全部历史会话。本机暂不采集 Claude。
+- **Linux 远端 Codex / Claude：** 需要无交互 SSH、远端 Python 3、tmux 和在 tmux 内运行的 Agent。先用 `ssh -o BatchMode=yes work-server true` 验证登录，再启用远端监控。主机填 SSH 别名或 `user@host`，不带整条命令；默认 tmux Socket 留空，自定义填 Socket 文件完整路径；关注列表每行一个真实 tmux session 名，留空表示全部。端口或跳板写在本机 SSH config 中。
+- **成功标准：** 对应来源显示在线，且出现目标会话名称；在原 Agent 发一个短任务，观察运行到等待的状态变化。两种来源可同时启用，但至少留一种。
+
+如何查会话名、Socket 路径和完整 SSH 示例，见[首次配置指南 B](GETTING_STARTED.zh-CN.md#blinux-远端-codex--claude-code)。无需部署作者的 VS Code 任务或 tmux 同步脚本。
+
+### 可选：从源码构建
+
+只有想体验 main 预览、Intel 构建或开发时才需要 Python 3.9+ 和 Xcode Command Line Tools。在已下载或克隆的项目目录中执行：
 
 ```bash
 sh build_desktop.sh
 sh ./agent-orbit panel
 ```
 
-也可双击构建出的 `Agent Orbit.app`。首次安装默认只启用本机监控；已有安装会沿用迁移后的远端配置。点击面板右上角齿轮，或菜单栏 `AO → 设置…`，打开统一设置。
+也可双击构建出的 `Agent Orbit.app`。
 
-设置中的 SSH 主机填写你已有的 SSH 配置别名或 `user@host`。Socket 留空使用远端默认 tmux，使用自定义 Socket 时填写完整路径。远端关注列表每行一个会话名，留空表示全部。
+### 回到目标会话
 
-本机关联当前打开的 Codex 根会话，可选择全部或逐个关注。未使用可识别运行记录的版本会显示待核实。点击本机会话会唤起已安装的 Codex 客户端；远端卡片进入原 tmux 会话。退出 tmux 连接使用 **Ctrl+B**，松开后按 **D**，远端任务继续运行。
+双击本机会话卡片会尝试唤起已安装的 Codex 客户端，不能自动定位指定聊天或恢复原 CLI / VS Code 终端；请回到原会话所在的应用继续输入。远端卡片从 main 新构建可打开终端进入原 tmux 会话；**稳定 5.2.6 独立应用包的进入按钮缺少依赖文件**，先按[手动进入方法](GETTING_STARTED.zh-CN.md#b5-回到原远端会话)连接。退出 tmux 连接使用 **Ctrl+B**，松开后按 **D**，远端任务继续运行。
 
 ## 简短命令
 
-新命令为 `ao`，原有 `cr` 与 `codex-remote` 入口继续兼容。将下面这行加入 `~/.zshrc`，路径替换为你的项目目录：
+新命令为 `ao`，原有 `cr` 与 `codex-remote` 入口继续兼容。仅下载 `.app` 不会自动安装这些终端快捷命令；使用源码项目时，将下面这行加入 `~/.zshrc`，路径替换为你的项目目录：
 
 ```zsh
 source '/path/to/agent-orbit/shortcuts.zsh'
 ```
+
+当前终端执行同一行，或新开一个终端后使用：
 
 ```bash
 ao p                # 桌面面板

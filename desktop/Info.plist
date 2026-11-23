@@ -12,4 +12,5 @@
   <key>LSUIElement</key><true/>
   <key>LSMinimumSystemVersion</key><string>13.0</string>
   <key>NSHighResolutionCapable</key><true/>
+  <key>NSAppleEventsUsageDescription</key><string>允许 Agent Orbit 打开终端，连接您选择的远端 tmux 会话。</string>
 </dict></plist>
