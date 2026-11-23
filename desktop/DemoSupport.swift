@@ -149,6 +149,69 @@ enum DemoSupport {
         result.metrics?.toolsPerMinute = result.rows.reduce(0) { $0 + ($1.usageMetrics?.toolsPerMinute ?? 0) }
         return result
     }
+    /// Deterministic fixture for the real signal renderer; never starts a collector.
+    static func signalSnapshot(_ step: Int) -> Snapshot {
+        var value = snapshot(3)
+        let output = [0, 8, 40, 160, 12, 0, 380, 65, 25, 920, 100, 0]
+        let io = [0, 1024, 8192, 16_384, 65_536, 2048, 0, 262_144, 4096, 131_072, 0, 8192]
+        let network = [0, 140, 820, 8192, 12_288, 900, 0, 1600, 24_576, 2200, 0, 640]
+        func sum(_ pattern: [Int], shift: Int) -> Int {
+            guard step > 0 else { return 0 }
+            return (1...step).reduce(0) { $0 + pattern[($1 + shift) % pattern.count] }
+        }
+        let decoder = JSONDecoder(); decoder.keyDecodingStrategy = .convertFromSnakeCase
+        for index in value.rows.indices {
+            let shift = index * 3
+            let identity = "demo-signals-\(index)"
+            value.rows[index].outputTotal = 1000 + sum(output, shift: shift)
+            value.rows[index].usageMetrics?.rootIdentity = identity
+            value.rows[index].usageMetrics?.toolCompletions = 100 + (0...step).filter { ($0 + shift) % 9 == 4 }.count
+            value.rows[index].usageMetrics?.toolsEpoch = 1
+            value.rows[index].usageMetrics?.activeTools = step % 9 < 4 ? 1 : 0
+            let dictionary: [String: Any] = [
+                "identity": identity, "epoch": identity, "sample_id": step + 1, "sample_age_seconds": 0,
+                "scope": "process_tree", "process_count": index + 2, "tree_complete": true,
+                "memory_bytes": (240 + index * 140) * 1_048_576, "host_memory_bytes": 8_589_934_592,
+                "memory_available": true, "memory_complete": true,
+                "io_read_bytes": 1024 + sum(io, shift: shift), "io_write_bytes": 2048 + sum(io, shift: shift + 2) / 4,
+                "io_read_per_second": io[(step + shift) % io.count] * 2,
+                "io_write_per_second": io[(step + shift + 2) % io.count] / 2,
+                "io_available": true, "io_complete": true,
+                "network_rx_bytes": 1000 + sum(network, shift: shift),
+                "network_tx_bytes": 1000 + sum(network, shift: shift + 5) / 3,
+                "network_rx_per_second": network[(step + shift) % network.count] * 2,
+                "network_tx_per_second": network[(step + shift + 5) % network.count] * 2 / 3,
+                "network_available": true, "network_complete": true, "network_shared": false
+            ]
+            value.rows[index].resources = try! decoder.decode(ResourceMetrics.self, from: JSONSerialization.data(withJSONObject: dictionary))
+        }
+        return value
+    }
+
+    static func exportSignals(_ model: PanelModel, folder: URL) throws {
+        try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+        let suite = "agent-orbit-signal-export-" + UUID().uuidString
+        guard let preferences = UserDefaults(suiteName: suite) else { return }
+        defer { preferences.removePersistentDomain(forName: suite) }
+        preferences.set(false, forKey: "orbitMiniMode")
+        for theme in ThemePalette.names {
+            prepare(model, theme: theme)
+            model.settings.waveResources = true; model.settings.waveStyle = "bars"
+            model.settings.waveHeight = 1.3
+            let view = BubbleView(frame: NSRect(x: 0, y: 0, width: 176, height: 176), preferences: preferences)
+            for step in 0...48 {
+                model.apply(signalSnapshot(step))
+                view.update(model, now: 1000 + Double(step) * 0.5)
+            }
+            try capture(view, size: view.bounds.size, path: folder.appendingPathComponent("signals-" + theme + ".png"), scale: 2)
+            if theme == "neon" {
+                try capture(NSHostingView(rootView: PanelView(model: model).frame(width: 320, height: 470)), size: NSSize(width: 320, height: 470), path: folder.appendingPathComponent("signals-panel.png"))
+                try capture(NSHostingView(rootView: WaveGuideView()), size: NSSize(width: 700, height: 760), path: folder.appendingPathComponent("signals-manual.png"))
+            }
+        }
+        print("Exported synthetic signal screenshots using the native renderer")
+    }
+
     static func capture(_ view: NSView, size: NSSize, path: URL, scale: CGFloat = 1) throws {
         let logicalBounds = view.bounds
         let isOrbit = view is BubbleView

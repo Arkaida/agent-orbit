@@ -232,6 +232,14 @@ private final class ThemeTestSuite {
     }
 
     func resourcePalettes() {
+        check(ResourceRole.allCases == [.output, .io, .tools, .network, .memory],
+              "Output and process I/O must remain separate channels in the shared legend")
+        check(ResourceRole.output.title == "输出" && ResourceRole.io.title == "进程 I/O",
+              "Channel titles must not merge output activity and process I/O")
+        for role in ResourceRole.allCases {
+            check(!role.description.isEmpty && !role.graphicDescription.isEmpty && !role.symbolName.isEmpty,
+                  "Each shared channel must explain both its measurement and its visual shape")
+        }
         for skin in SkinDefinition.all {
             let palette = PaletteResolver(skin: skin, statusStyle: "theme")
             let classic = PaletteResolver(skin: skin, statusStyle: "status")
@@ -270,6 +278,10 @@ private final class ThemeTestSuite {
         for state in states {
             check(palette.session(state) == tokens[state.role], "An injected skin must color session states centrally")
             check(palette.waveColor(state: state, palette: "theme", fraction: 0) == tokens[state.role], "An injected skin must also color semantic waves centrally")
+        }
+        for role in ResourceRole.allCases {
+            check(nativeToken(palette.resourceColor(role)) == palette.resourceToken(role),
+                  "An injected skin must supply all five resource channels through the shared resolver")
         }
         check(palette.waveStyle("theme") == "dots" && palette.waveLineWidth("theme") == 1.1, "A new skin's wave defaults must not need renderer changes")
         let classic = PaletteResolver(skin: skin, statusStyle: "status")

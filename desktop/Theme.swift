@@ -9,13 +9,41 @@ enum ThemeRole: String, CaseIterable {
 
 /// Resource channels describe measurements; their colors never select a session state.
 enum ResourceRole: String, CaseIterable {
-    case output, tools, network, memory
+    case output, io, tools, network, memory
     var title: String {
         switch self {
-        case .output: return "输出/I/O"
+        case .output: return "输出"
+        case .io: return "进程 I/O"
         case .tools: return "工具"
         case .network: return "网络"
         case .memory: return "内存"
+        }
+    }
+    var description: String {
+        switch self {
+        case .output: return "页面、运行记录或已确认后台进展的活动变化；这是显示活动量，不等于字节吞吐、Token 消耗或完成状态。"
+        case .io: return "根进程 rchar / wchar 的变化，即系统调用读写字节；包含缓存、管道等，并非纯磁盘读写，也不是整个会话的精确 I/O。"
+        case .tools: return "空心菱形表示工具已发起、尚未返回，是静态标记；实心菱形针表示新观测到工具返回。没有新返回就没有事件波峰，返回不等于执行成功、任务完成或成功率。"
+        case .network: return "所选进程树可归属的 TCP 收发字节。共享连接、权限或平台限制可能让数据只有部分覆盖；未观测不会当作零。"
+        case .memory: return "进程树的常驻内存 RSS，显示为静态标记；共享内存页可能重复计入。占用内存不代表正在工作。"
+        }
+    }
+    var graphicDescription: String {
+        switch self {
+        case .output: return "连续填充光带 · 新增输出越多，起伏越明显"
+        case .io: return "分段短柱 · 读写增量越大，柱越高"
+        case .tools: return "空心菱形标记未返回；实心菱形针标记新返回"
+        case .network: return "细曲线与峰帽 · 收发增量越大，起伏越明显"
+        case .memory: return "静态细弧 · 按所占主机内存比例显示"
+        }
+    }
+    var symbolName: String {
+        switch self {
+        case .output: return "waveform.path"
+        case .io: return "arrow.left.arrow.right"
+        case .tools: return "wrench.and.screwdriver"
+        case .network: return "network"
+        case .memory: return "memorychip"
         }
     }
 }
@@ -86,7 +114,7 @@ struct SkinDefinition {
         self.title = title
         self.light = light
         self.tokens = tokens
-        self.resourceTokens = resourceTokens ?? [.output: tokens[.accent]!, .tools: tokens[.attention]!,
+        self.resourceTokens = resourceTokens ?? [.output: tokens[.accent]!, .io: tokens[.error]!, .tools: tokens[.attention]!,
                                                   .network: tokens[.secondaryAccent]!, .memory: tokens[.text]!]
         precondition(Set(self.resourceTokens.keys) == Set(ResourceRole.allCases), "Every skin must define every resource channel")
         precondition(self.resourceTokens.values.allSatisfy { $0 <= 0xFFFFFF }, "Resource colors must be opaque RGB tokens")
@@ -102,7 +130,7 @@ struct SkinDefinition {
             .running: 0x3DD9FF, .waiting: 0x57FFB2,
             .attention: 0xF4CD73, .error: 0xFF708C,
             .unknown: 0xBD9AEF, .offline: 0x7F8EA5
-        ], defaultWaveStyle: "plasma", resourceTokens: [.output: 0x63D9FF, .tools: 0xFFD187, .network: 0xB99CFF, .memory: 0x7CE3C0]),
+        ], defaultWaveStyle: "plasma", resourceTokens: [.output: 0x63D9FF, .io: 0xFF91B5, .tools: 0xFFD187, .network: 0xB99CFF, .memory: 0x7CE3C0]),
         SkinDefinition(id: "aurora", title: "极光紫", light: false, tokens: [
             .base: 0x100B20, .surface: 0x20132F,
             .accent: 0xBD9CFF, .secondaryAccent: 0xF38AC5,
@@ -110,7 +138,7 @@ struct SkinDefinition {
             .running: 0xBD9CFF, .waiting: 0x83E7BE,
             .attention: 0xF7CF79, .error: 0xFF8FAE,
             .unknown: 0xCFAC91, .offline: 0xA29AAF
-        ], defaultWaveStyle: "aurora", defaultWaveLineWidth: 1.2, resourceTokens: [.output: 0x86D6FF, .tools: 0xF3C57D, .network: 0xCE9EFF, .memory: 0x84DBC7]),
+        ], defaultWaveStyle: "aurora", defaultWaveLineWidth: 1.2, resourceTokens: [.output: 0x86D6FF, .io: 0xFF9DA6, .tools: 0xF3C57D, .network: 0xCE9EFF, .memory: 0x84DBC7]),
         SkinDefinition(id: "graphite", title: "石墨黑", light: false, tokens: [
             .base: 0x101215, .surface: 0x1C2025,
             .accent: 0x88C5D6, .secondaryAccent: 0xC0A9DA,
@@ -118,7 +146,7 @@ struct SkinDefinition {
             .running: 0x88C5D6, .waiting: 0x9CD4B2,
             .attention: 0xE2CB8B, .error: 0xE58D9C,
             .unknown: 0xB9A1CA, .offline: 0x8C96A3
-        ], defaultWaveStyle: "radar", defaultWaveLineWidth: 0.9, resourceTokens: [.output: 0x8FCFE5, .tools: 0xDBC084, .network: 0xC9AEEC, .memory: 0x9ACDBA]),
+        ], defaultWaveStyle: "radar", defaultWaveLineWidth: 0.9, resourceTokens: [.output: 0x8FCFE5, .io: 0xE8A0AB, .tools: 0xDBC084, .network: 0xC9AEEC, .memory: 0x9ACDBA]),
         SkinDefinition(id: "daylight", title: "晴空浅色", light: true, tokens: [
             .base: 0xEDF2FA, .surface: 0xFFFFFF,
             .accent: 0x136FBA, .secondaryAccent: 0x7856C7,
@@ -126,7 +154,7 @@ struct SkinDefinition {
             .running: 0x136FBA, .waiting: 0x087A4F,
             .attention: 0x8A6600, .error: 0xC52B45,
             .unknown: 0x79559A, .offline: 0x59697D
-        ], defaultWaveStyle: "curve", defaultWaveLineWidth: 1.2, resourceTokens: [.output: 0x136FBA, .tools: 0x946000, .network: 0x7951C2, .memory: 0x24775E])
+        ], defaultWaveStyle: "curve", defaultWaveLineWidth: 1.2, resourceTokens: [.output: 0x136FBA, .io: 0xB44860, .tools: 0x946000, .network: 0x7951C2, .memory: 0x24775E])
     ]
 }
 

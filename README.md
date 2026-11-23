@@ -1,99 +1,93 @@
 <div align="center">
 
-<img src="docs/media/icon.png" width="88" alt="Agent Orbit icon">
+<img src="docs/media/icon.png" width="76" alt="Agent Orbit icon">
 
 # Agent Orbit
 
-**Know when your agents need you.**
+### Keep your agents in sight.
 
-本机与远端 CLI Agent 的桌面会话环 · A native macOS monitor for Codex CLI & Claude Code CLI
+**CLI 在工作，桌面有回声。需要你时，一眼看见。**
 
-[![macOS 13+](https://img.shields.io/badge/macOS-13%2B-101a2c?logo=apple&logoColor=white)](https://github.com/Arkaida/agent-orbit/releases)
+独立 macOS 应用 · 本机 Codex CLI · SSH 远端 Codex CLI / Claude Code CLI
+
+[![macOS 13+](https://img.shields.io/badge/macOS-13%2B-101a2c?logo=apple&logoColor=white)](https://github.com/Arkaida/agent-orbit/releases/tag/v5.2.6)
 [![MIT](https://img.shields.io/badge/license-MIT-38d9ff)](LICENSE)
 [![Checks](https://github.com/Arkaida/agent-orbit/actions/workflows/ci.yml/badge.svg)](https://github.com/Arkaida/agent-orbit/actions/workflows/ci.yml)
 
-[**下载应用 / Download**](https://github.com/Arkaida/agent-orbit/releases/latest) · [中文使用指南](docs/USAGE.zh-CN.md) · [状态如何判断](docs/STATUS.md)
+[**下载稳定版 5.2.6**](https://github.com/Arkaida/agent-orbit/releases/tag/v5.2.6) · [**声浪图解**](docs/WAVE_GUIDE.zh-CN.md) · [使用指南](docs/USAGE.zh-CN.md)
 
-<img src="docs/media/hero.png" width="100%" alt="Agent Orbit: compact native monitor and floating session ring, shown with fictional demo data">
+<img src="docs/media/orbit-signals-hero.png" width="100%" alt="Agent Orbit main preview: a compact CLI monitor and floating session ring with four overlapping activity signals; fictional demo data">
 
 </div>
 
-不必反复切回终端，看看 CLI Agent 做完了没有。**Agent Orbit 专注监控 Codex CLI 与 Claude Code CLI 会话**，常驻桌面，在任务等待输入、需要确认或遇到异常时，让你及时看到。
+Agent Orbit 将你已有的 **CLI Agent 会话**放在桌面边缘：运行、等待输入、需要确认和异常，各有清楚的状态。无需反复切回终端，也能及时接住下一轮工作。
 
-Monitor **Codex CLI and Claude Code CLI sessions** from a compact always-on-top window or floating ring. Supports local Codex CLI and remote Codex CLI / Claude Code CLI over SSH and tmux. See running, waiting and error states at a glance, with optional sound alerts.
+A standalone native macOS monitor for **Codex CLI and Claude Code CLI**. Follow local or SSH/tmux sessions, see when they need input, and return to the original conversation. No Codex plugin, external Python or Node.js is required to run the app.
 
-> **独立应用。** 下载后双击 `.app` 即可运行，无需安装 Python、Node.js 或 Codex 插件，也不需要在 Codex 中启动。它读取你已有的会话，不启动或接管 Agent。
+> **版本提示** · 稳定下载为 **5.2.6**。上图与下方「四路活动声浪」展示 **main 预览版 5.2.7 / build 33**，尚未发布新安装包；体验新声浪请从 main 构建。5.2.6 的下载包仍使用上一版资源声浪。[更新记录](docs/RELEASES.md)
 
-**5.2.6 更新**：右键会话或组可手动标为运行中，收到新的回复结果后自动解除；修复 Claude 完成状态和异步子智能体漏判，资源声浪改为同圈叠加、停止后立即收起，并以细双色弧表示空闲／运行比例。[更新说明](docs/RELEASES.md)
+## 从“还在跑吗”到“该我继续了”
 
-## 看看它如何工作
+| 看状态 | 看进展 | 回到工作 |
+| --- | --- | --- |
+| 已确认结束后显示等待；需要批准、回答或处理错误时单独提醒 | 会话环保留近期真实活动，悬停查看数值、峰值与采集覆盖 | 远端回到原 tmux 会话，本机会话唤起 Codex 客户端 |
+| 完成与异常分别控制声音，恢复后清除旧问题 | 每会话的等待时间、运行时间、Token 与工具完成速度 | 单击切换迷你球，双击展开面板，拖动放到顺手的位置 |
 
-https://github.com/user-attachments/assets/13b256c0-9bb2-414b-a473-045c255d25ad
+**应用自己运行。** 双击 `.app` 即可启动。它读取你已有的会话，不启动或接管 Agent，也不向 CLI 发送输入。
 
-[下载完整介绍视频 MP4](https://github.com/Arkaida/agent-orbit/releases/download/v5.2.1/agent-orbit-demo.mp4)
+## 四路活动声浪，一条时间轴
 
-视频可直接点击播放，展示 5.2.1 界面。全部画面使用应用原生界面与虚构会话数据，未录入真实桌面、主机或对话。
+**main 预览** · 输出光带、I/O 分段柱、工具针与菱形、网络细曲线，共用同一条圆周基线。最近 **24 秒**从旧到新顺时针展开；RSS 内存只保留一段静态细弧。层次来自真实数据和不同图形，不靠随机跳动。
 
-<details>
-<summary>展开 GIF 动图预览</summary>
+<img src="docs/media/orbit-signals-guide.svg" width="100%" alt="Signal legend: cyan output ribbon, rose I/O bars, amber tool pins and diamonds, violet network curve, and mint static RSS arc share one circular baseline and a 24-second timeline">
 
-[![Privacy-safe animated demo](docs/media/demo.gif)](https://github.com/Arkaida/agent-orbit/releases/download/v5.2.1/agent-orbit-demo.mp4)
-
-</details>
-
-| 在桌面上看见 | 它代表什么 |
+| 图形与默认色 | 读到的信号 |
 | --- | --- |
-| 🟢 等待输入 | 主任务已确认结束，可以继续下一轮 |
-| 运行中 | 正在思考、执行工具或有实际执行的子任务；使用皮肤运行色，经典配色下为橙色 |
-| 🟡 待处理 | 需要确认、回答或处理暂停 |
-| 🔴 异常 | 服务错误、中断、会话消失等，支持一次提示音 |
-| 待核实 / 离线 | 状态证据不足，或对应来源当前不可用 |
-| 会话环外的活动轨迹 | 最近输出或日志变化，**不是 CPU 或推理效率** |
+| 青蓝光带 · **输出** | 页面、运行记录或已确认后台进展的活动变化；不是字节或 Token 吞吐 |
+| 玫红分段柱 · **I/O** | root 进程 `rchar/wchar` 系统调用字节变化；不等于纯磁盘读写 |
+| 琥珀针 / 实心菱形 · **工具** | 主日志中工具返回了结果，包含失败结果；空心菱形仅表示仍有活动工具 |
+| 紫色细曲线 · **网络** | 可关联 TCP 的收发变化；共享、部分覆盖会明确标注 |
+| 薄荷静态弧 · **内存** | 已关联进程树的 RSS，占用信息保持静态 |
 
-## 你可以做什么
+颜色随皮肤适配，图形含义保持不变。每个会话、每个通道独立缩放，柱高用于看**本通道近期起伏**，不用于跨会话比较效率。静默不生成新波峰，未知不填成零。进入等待、异常或离线，活动立即收起。
 
-- **本机 + 远端 CLI 监控**：自动发现本机 Codex CLI；通过 SSH 读取远端 tmux 中的 Codex CLI / Claude Code CLI。连接状态彼此独立。
-- **关注重要会话**：分别配置本机和远端关注列表；关闭设置后继续监控。
-- **分会话效率与待响应**：逐个查看工作时长、等待时长、输出和工具速度；久等提醒可调整阈值、稍后提醒，回答后自动清除旧等待。[提醒规则](docs/RESPONSE.md)
-- **独立或编组，由你配置**：设置中选成员创建互斥组，整个组在圆周上只占一个位置，面板合并为一张可展开的卡片；共用一段声浪、空闲／运行计时和去重后的用量。任一成员工作时不催其他成员，随时可移出或拆组，默认不自动编组。
-- **两种悬浮球**：小号球显示待响应和最长等待，完整球显示圆周会话名；单击切换大小，双击打开面板，拖动移动，多会话自动双圈。
-- **完成与异常提醒**：分别控制声音，恢复后自动移除旧异常，不展示执行历史。
-- **手动运行标记**：遇到无输出但仍在工作的会话，可在悬浮球右键会话或组，选“手动标为运行中”；新回复结果到达后自动解除，也可随时取消。标记不会遮蔽异常或离线状态。
-- **统一状态配色**：四套皮肤；名字、状态文字、圆弧与标记使用同一套状态色，可选择皮肤状态色或经典状态色。另可调整置顶、透明度、悬浮球尺寸及显示内容。
-- **自定义外围声浪**：资源通道在同一圈叠加，只显示正在运行会话的真实活动；可调高度、密度与灵敏度，关闭资源模式后可选原有样式。名称旁的细双色比例弧表示累计空闲与运行占比，悬停查看具体时长。
-- **实时 Token 数量**：悬浮球和各会话显示近 30 秒新增 Token，面板显示完整累计数字；同时查看运行占比、消耗速度、上游输出速度和工具完成速度。读取 CLI 实际用量记录，标明统计覆盖范围。[指标口径](docs/METRICS.md)
-- **保留原工作方式**：远端卡片进入原 tmux 会话，本机卡片唤起 Codex 客户端。
+绘图节奏随可见性、活动和自身开销自适应：有新活动时更流畅，静默与迷你模式更克制。短暂视觉过渡只平滑已观测的高度，采样、状态和提醒独立更新，不靠补造流量制造动感。
 
-<img src="docs/media/usage-overview.png" width="320" alt="Per-session waiting timers, output token rate, tool rate and observed idle/run totals, with synthetic demo data">
-<img src="docs/media/usage-orbit.png" width="176" alt="Floating session ring with idle/run captions and a shared response overview, using synthetic demo data">
+**从应用里也能看懂：** 悬浮球右键 → **声浪图说明…**，或设置 → 外观 → **声浪图说明…**。[完整图例、阅读示例与平台覆盖](docs/WAVE_GUIDE.zh-CN.md)
 
-<img src="docs/media/themes.png" width="100%" alt="Neon, Aurora, Graphite and Daylight themes">
+## 围绕你的工作方式
 
-<img src="docs/media/state-colors.png" width="100%" alt="Six distinct session state colors across four native skins, using synthetic data">
+- **本机与远端并看。** 自动发现本机 Codex 会话；通过已有 SSH 读取远端 tmux 中的 Codex / Claude。关注列表和连接状态各自独立。
+- **需要你时再提醒。** 各会话保留等待时长、运行时长与久等提醒，可稍后提醒或静音本轮。主任务结束不会被保留的 shell 数量遮住。
+- **互斥任务可以成组。** 自选成员，整个组在圆周占一个位置，合并空闲／运行计时与去重用量。任一成员工作时不催其他成员，随时可拆组。
+- **小窗与悬浮球都能换肤。** 四套皮肤覆盖窗口、名字、状态和声浪；调高度、密度、透明度与大小。会话状态色和活动通道色各有明确职责。
+- **数字有来源。** Token 取自 CLI 实际用量记录；工具速度按已返回结果计数。缺失与部分统计明确显示，不把未知数据补成零。
+- **保留人工纠正入口。** 右键会话或组可手动标为运行中，新回复结果到达后自动解除。异常、待确认和离线始终优先。
 
-<img src="docs/media/wave-styles.png" width="100%" alt="Waveform styles and palettes using synthetic CLI session data">
+## 三步开始
 
-<img src="docs/media/spectrum-bars.gif" width="280" alt="Holographic segmented output bars with peak caps and event-driven trails; synthetic CLI demo">
+1. 在 [**稳定版 5.2.6**](https://github.com/Arkaida/agent-orbit/releases/tag/v5.2.6) 下载 Apple Silicon `arm64` 应用 ZIP。Intel Mac 可从源码构建。
+2. 解压，将 **Agent Orbit.app** 放到“应用程序”或常用目录，双击打开。运行环境已内置，支持 **macOS 13+**。
+3. 打开设置，选择本机关注会话；需要远端时填写已有 SSH 别名、tmux Socket 与关注列表。
 
-全息声浪柱：分段柱身、亮色细芯、峰值短帽与输出触发的短拖尾。[四套皮肤预览](docs/media/spectrum-skins.png)
+远端需要可无交互登录的 SSH，以及已有的 Python 3、tmux 和 Agent 会话。社区应用使用本地签名，尚未 Apple 公证；如系统阻止打开，请确认来源和校验值后，使用系统“隐私与安全性 → 仍要打开”流程。
 
-## 安装
+### 从 main 体验新声浪
 
-1. 在 [Releases](https://github.com/Arkaida/agent-orbit/releases/latest) 下载应用 ZIP。当前提供 Apple Silicon 的 `arm64` 安装包；Intel Mac 可按下方开发说明从源码构建。
-2. 解压，将 **Agent Orbit.app** 放到“应用程序”或任意常用目录，双击启动。
-3. 点右上角齿轮打开设置。默认监控本机；远端模式填写已有 SSH 别名与 tmux Socket，选择关注会话。
+在 macOS 上安装 Xcode Command Line Tools 与 Python 3.9+ 后：
 
-应用支持 **macOS 13+**，运行环境已内置。远端模式需要可无交互登录的 SSH，以及远端已有的 Python 3、tmux 和 Agent 会话。
-
-当前社区构建使用本地签名，尚未进行 Apple 公证。macOS 可能提示无法验证开发者；请仅在确认下载来源和校验值后，按系统提供的“隐私与安全性 → 仍要打开”流程操作。不要关闭系统安全保护。
-
-## 可选：终端命令
-
-源码目录中提供 `agent-orbit` 入口，会优先使用应用自带的运行环境。将下面一行加入 `~/.zshrc`，并替换为自己的项目位置：
-
-```zsh
-source '/path/to/agent-orbit/shortcuts.zsh'
+```bash
+git clone https://github.com/Arkaida/agent-orbit.git
+cd agent-orbit
+sh build_desktop.sh
+open 'Agent Orbit.app'
 ```
+
+首次构建下载固定版本、经过 SHA-256 校验的可搬移 Python。构建后的应用可移到其他目录独立运行。
+
+### 也可以从终端进入
+
+将 `source '/path/to/agent-orbit/shortcuts.zsh'` 加入 `~/.zshrc`，路径替换为项目位置：
 
 ```bash
 ao p                # 打开桌面应用
@@ -105,33 +99,37 @@ ao atlas            # 进入原远端 tmux 会话
 
 旧的 `cr`、`codex-remote` 命令继续兼容。退出 tmux 连接按 **Ctrl+B**，松开后按 **D**，任务继续运行。
 
-## 隐私与判断边界
+## 只读、直接、留在你的设备上
 
-- 只读采集，无账户注册、遥测、云端中转或对外 HTTP 服务。远端通过已有 SSH 连接读取。
-- 设置与关注列表留在本机用户目录，源码和发布包不含个人配置。日志仅记录连接诊断，不保存对话正文。
-- 保留终端的数量不会直接阻止主对话显示等待；无法可靠归属的本机后台终端数量会省略。
-- Codex / Claude 的日志格式会变化；无法确认的状态明确显示待核实，不会把长时间静默直接判为完成。
+无账户注册、遥测、云端中转或 HTTP 服务。远端经已有 SSH 连接读取；个人设置与关注列表留在本机，发布包不携带个人配置。连接诊断不保存对话正文。
 
-详见 [状态规则](docs/STATUS.md)、[使用指南](docs/USAGE.zh-CN.md)、[待响应与悬浮球](docs/RESPONSE.md)、[用量指标](docs/METRICS.md)、[颜色分析与统一接口](docs/THEMING.md) 和 [第三方许可](THIRD_PARTY_NOTICES.md)。
+CLI 的日志格式会变化。证据不足时显示待核实；静默、内存占用、后台终端存在或网络活动都不会单独证明完成或仍在工作。声浪用于观察近期活动，状态负责告诉你是否需要返回会话。
 
-## 开发与贡献
+<details>
+<summary>早期版本视频 · 5.2.1 原生界面与虚构数据</summary>
 
-使用 macOS 的 Xcode Command Line Tools 与 Python 3.9+ 构建：
+https://github.com/user-attachments/assets/13b256c0-9bb2-414b-a473-045c255d25ad
+
+[下载视频 MP4](https://github.com/Arkaida/agent-orbit/releases/download/v5.2.1/agent-orbit-demo.mp4)。视频展示早期界面，不包含 main 预览的新声浪。
+
+</details>
+
+## 文档与贡献
+
+| 使用 | 原理与开发 |
+| --- | --- |
+| [完整使用指南](docs/USAGE.zh-CN.md) | [状态判断规则](docs/STATUS.md) |
+| [声浪图解与常见问题](docs/WAVE_GUIDE.zh-CN.md) | [用量与资源指标](docs/METRICS.md) |
+| [等待提醒与互斥组](docs/RESPONSE.md) | [统一皮肤接口](docs/THEMING.md) |
+| [版本记录](docs/RELEASES.md) | [贡献指南](CONTRIBUTING.md) · [第三方许可](THIRD_PARTY_NOTICES.md) |
 
 ```bash
 python3 -m unittest
+sh scripts/check_orbit_waves.sh
 sh build_desktop.sh
 python3 scripts/package_release.py
 ```
 
-首次构建下载固定版本、经过 SHA-256 校验的可搬移 Python 运行环境；安装后的应用不需要外部 Python。`dist/` 生成源码包、当前架构应用包与校验文件。CI 在 Linux / macOS 验证采集逻辑，在 macOS 构建应用。
-
-不连接真实会话的演示模式：
-
-```bash
-open 'Agent Orbit.app' --args --demo
-```
-
-欢迎提交复现信息、状态识别样例、无个人内容的截图或改进建议。请先阅读 [CONTRIBUTING.md](CONTRIBUTING.md)。
+不连接真实会话的演示：`open 'Agent Orbit.app' --args --demo`。欢迎提交脱敏截图、状态识别样例和改进建议。
 
 **MIT License** · Independently built; not affiliated with OpenAI or Anthropic.

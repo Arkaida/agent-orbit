@@ -95,6 +95,24 @@ def diagnostic_event(root, event, **fields):
         pass  # A log write failure must not interrupt the monitor.
 
 
+class FrameEmissionGate:
+    """Publish real changes immediately; a quiet bridge sends one heartbeat/s.
+
+    This controls display delivery only. Collectors, event reducers and command
+    polling must continue independently, including between emitted heartbeats.
+    """
+    def __init__(self, heartbeat_seconds=1.0):
+        self.heartbeat_seconds = max(0.1, heartbeat_seconds)
+        self.last_emitted = None
+
+    def should_emit(self, now, changed=False):
+        if (changed or self.last_emitted is None or now < self.last_emitted or
+                now - self.last_emitted >= self.heartbeat_seconds):
+            self.last_emitted = now
+            return True
+        return False
+
+
 class FeedState:
     """Separate observed snapshots from cached display and connection gaps."""
     def __init__(self):
@@ -193,6 +211,8 @@ def run(args):
     usage = UsageTracker()
     responses = SessionResponseTracker()
     manual = ManualRunningTracker(data_dir() / 'manual-overrides.json')
+    emission = FrameEmissionGate()
+    configuration_signature = None
     next_config, config_error, stopping = 0, '', False
     # Invalid settings must still produce a first frame so the UI can explain
     # the error and recover when the user saves a corrected file. No source is
@@ -208,6 +228,7 @@ def run(args):
     try:
         while not stopping:
             now = time.monotonic()
+            changed = False
             if now >= next_config:
                 try:
                     settings = load_settings(root)
@@ -237,6 +258,10 @@ def run(args):
                     config_error = ''
                 except (OSError, ValueError) as error:
                     config_error = str(error)
+                signature = (settings, tuple(selected), config_error)
+                if signature != configuration_signature:
+                    configuration_signature = signature
+                    changed = True
                 next_config = now + .5
             known = []
             for name, runtime in runtimes.items():
@@ -245,8 +270,8 @@ def run(args):
                 for row in runtime['state'].model.visible(focus if name == 'remote' else []):
                     known.append(dict(row, source=name, available=health['connected'],
                                       group_id=name + ':' + row['session'] if name == 'remote' else row.get('group_id', row['pane_id'])))
-            manual.poll(known)
-            chunks, connections, discovered = [], [], []
+            changed = manual.poll(known) or changed
+            sources, connections, discovered = [], [], []
             for name, runtime in runtimes.items():
                 stream, state = runtime['stream'], runtime['state']
                 focus = selected if name == 'remote' else settings['local_followed']
@@ -254,6 +279,7 @@ def run(args):
                     state = runtime['state'] = FeedState()
                     runtime['focus'] = tuple(focus)
                 for frame in stream.poll():
+                    changed = True
                     if name == 'local' and 'panes' in frame:
                         runtime['discovered'] = [dict(thread_id=r.get('thread_id'), session=r['session']) for r in frame['panes']]
                         frame = dict(frame, panes=[r for r in frame['panes'] if not focus or r.get('thread_id') in focus])
@@ -267,7 +293,7 @@ def run(args):
                                  sampled_at, sampled_wall, max_gap_seconds=sample_gap, transform=apply_manual)
                     if 'panes' in frame:
                         # Usage receives genuine collector samples only. The
-                        # 10 Hz display payload below must never establish a
+                        # Display heartbeats below must never establish a
                         # second baseline or accumulate another usage delta.
                         observed = source_payload(name, state, dict(connected=True), focus)['rows']
                         sample_epoch = (runtime['signature'], stream.connections, state.generation, tuple(focus))
@@ -289,10 +315,23 @@ def run(args):
                 state.connection(health['connected'], time.monotonic(), time.time(), health['message'], health['connection_state'] == 'delayed')
                 key = (health['connection_state'], stream.error, state.model.remote_error, config_error)
                 if key != runtime['last_health']:
+                    changed = True
                     diagnostic_event(data_dir(), 'connection_state', source=name, state=health['connection_state'], reason=stream.error or state.model.remote_error or config_error or health['message'])
                     runtime['last_health'] = key
-                chunks.append(source_payload(name, state, health, focus))
+                # Connection alerts can mature without a collector packet.
+                # Deliver those immediately as well, not at the next heartbeat.
+                alert_revision = (len(state.notification_events),
+                                  state.notification_events[-1]['id'] if state.notification_events else None)
+                if alert_revision != runtime.get('alert_revision'):
+                    changed = True
+                    runtime['alert_revision'] = alert_revision
+                sources.append((name, state, health, focus))
                 connections.append(dict(id=name, label='远端' if name == 'remote' else '本机', **health))
+            if not emission.should_emit(time.monotonic(), changed=changed):
+                time.sleep(.1)
+                continue
+            chunks = [source_payload(name, state, source_health, focus)
+                      for name, state, source_health, focus in sources]
             health = aggregate_connection_status(connections, config_error)
             payload = {key: [item for chunk in chunks for item in chunk[key]] for key in ('rows', 'events', 'error_events', 'active_error_events')}
             payload.update(followed=selected, host=settings['host'] if settings['remote_enabled'] else '本机',

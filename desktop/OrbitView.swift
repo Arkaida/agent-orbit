@@ -1,4 +1,5 @@
 import AppKit
+import Darwin
 
 final class BubbleView: NSView {
     var restore: (() -> Void)?
@@ -35,12 +36,15 @@ final class BubbleView: NSView {
         var manualTarget: ManualRunTarget
     }
     private struct ResourceState {
+        var outputKnown = false
         var memoryBytes: Double?
         var hostMemoryBytes: Double?
         var memoryPartial = false
         var ioRate: Double?
+        var ioKnown = false
         var ioPartial = false
         var networkRate: Double?
+        var networkKnown = false
         var networkPartial = false
         var networkShared = false
         var processShared = false
@@ -65,6 +69,44 @@ final class BubbleView: NSView {
         var epoch: Int?
         var total: Int
     }
+    struct WaveEvent {
+        var time: TimeInterval
+        var amount: Double
+    }
+    struct WaveBucket {
+        var rate: Double = 0
+        var newest: TimeInterval?
+        var startTime: TimeInterval = 0
+    }
+    private struct GeometryKey: Hashable {
+        var node: String
+        var role: ResourceRole
+        var bucketStart: TimeInterval
+    }
+    private struct GeometryTransition {
+        var from: CGFloat
+        var target: CGFloat
+        var startedAt: TimeInterval
+        func height(at now: TimeInterval) -> CGFloat {
+            BubbleView.interpolatedWaveHeight(from: from, to: target,
+                                               elapsed: now - startedAt) ?? target
+        }
+    }
+    static let waveTransitionDuration: TimeInterval = 0.18
+    static let dynamicResourceRoles: [ResourceRole] = [.output, .io, .tools, .network]
+    private var observationTime: TimeInterval?
+    private var visualNow: TimeInterval { observationTime ?? ProcessInfo.processInfo.systemUptime }
+    private var waveTransitions: [GeometryKey: GeometryTransition] = [:]
+    private var drawCostEMA: TimeInterval?
+    struct PresentationCPUReading {
+        var time: TimeInterval
+        var cpuSeconds: TimeInterval
+        var drawnFrames: UInt64
+    }
+    private var drawnFrames: UInt64 = 0
+    private var processCPUReading: PresentationCPUReading?
+    private var processFrameCostEMA: TimeInterval?
+    private var lastCPUPoll: TimeInterval?
     private var resourceMarks: [String: [ResourceRole: [ResourceMark]]] = [:]
     private var resourceReadings: [String: ResourceReading] = [:]
     private var toolReadings: [String: ToolReading] = [:]
@@ -232,9 +274,99 @@ final class BubbleView: NSView {
         setBoundsSize(NSSize(width: diameter, height: diameter))
     }
 
-    func update(_ model: PanelModel) {
-        self.model = model
+    /// Start a fresh visual baseline when returning from a hidden window. The
+    /// current model still determines status; hidden increments are not replayed.
+    func resumePresentation() {
+        outputMarks.removeAll(); outputReadings.removeAll(); outputActivePanes.removeAll()
+        resourceMarks.removeAll(); resourceReadings.removeAll(); toolReadings.removeAll()
+        resourceTargets.removeAll(); toolTargets.removeAll(); waveTransitions.removeAll()
+        observingSince.removeAll(); levels.removeAll(); samples.removeAll()
+        processCPUReading = nil; lastCPUPoll = nil
+    }
+
+    static func adaptiveFrameRate(visible: Bool, mini: Bool, reducedMotion: Bool,
+                                  fixedTime: Bool, recentPeak: Bool, drawCost: TimeInterval?) -> Double {
+        guard visible, !fixedTime else { return 0 }
+        let preferred = mini ? 1.5 : reducedMotion ? 2.0 : recentPeak ? 24.0 : 3.0
+        guard let cost = drawCost, cost.isFinite, cost > 0 else { return preferred }
+        // Spend at most roughly 6% of one core on drawing, before framework
+        // overhead. Heavy frames lower presentation rate, never state delivery.
+        return min(preferred, max(1, 0.06 / cost))
+    }
+
+    /// Self CPU time includes framework work after draw() returns, such as
+    /// display-list commit and client-side rasterisation. It is an estimate,
+    /// not a promise that every part of the app fits the presentation budget.
+    static func processFrameCost(previous: PresentationCPUReading, current: PresentationCPUReading) -> TimeInterval? {
+        guard previous.time.isFinite, current.time.isFinite, previous.time >= 0, current.time >= 0,
+              previous.cpuSeconds.isFinite, current.cpuSeconds.isFinite,
+              previous.cpuSeconds >= 0, current.cpuSeconds >= previous.cpuSeconds,
+              current.drawnFrames >= previous.drawnFrames else { return nil }
+        let elapsed = current.time - previous.time
+        guard elapsed >= 1, elapsed <= 10 else { return nil }
+        let frames = current.drawnFrames - previous.drawnFrames
+        guard frames > 0 else { return nil }
+        let cost = (current.cpuSeconds - previous.cpuSeconds) / Double(frames)
+        return cost.isFinite && cost >= 0 ? cost : nil
+    }
+
+    static func smoothedProcessFrameCost(previous: TimeInterval?, sample: TimeInterval) -> TimeInterval? {
+        let prior = previous.flatMap { $0.isFinite && $0 >= 0 ? $0 : nil }
+        guard sample.isFinite, sample >= 0 else { return prior }
+        guard let prior = prior else { return sample }
+        // React to increased cost promptly; recover slowly to avoid FPS churn.
+        let weight = sample > prior ? 0.55 : 0.1
+        return prior + (sample - prior) * weight
+    }
+
+    private func updateProcessFrameCost() {
         let now = ProcessInfo.processInfo.systemUptime
+        if let last = lastCPUPoll, now >= last, now - last < 1 { return }
+        lastCPUPoll = now
+        var usage = rusage()
+        guard getrusage(RUSAGE_SELF, &usage) == 0 else { processCPUReading = nil; return }
+        let cpu = Double(usage.ru_utime.tv_sec) + Double(usage.ru_utime.tv_usec) / 1_000_000 +
+            Double(usage.ru_stime.tv_sec) + Double(usage.ru_stime.tv_usec) / 1_000_000
+        let current = PresentationCPUReading(time: now, cpuSeconds: cpu, drawnFrames: drawnFrames)
+        if let previous = processCPUReading, let cost = Self.processFrameCost(previous: previous, current: current) {
+            processFrameCostEMA = Self.smoothedProcessFrameCost(previous: processFrameCostEMA, sample: cost)
+        }
+        processCPUReading = current
+    }
+
+    func recommendedFrameRate(visible: Bool) -> Double {
+        guard visible, observationTime == nil else { return 0 }
+        updateProcessFrameCost()
+        let clock = visualNow
+        let outputPeak = outputMarks.values.contains { marks in
+            marks.last.map { $0.amount > 0 && clock - $0.time >= 0 && clock - $0.time < 1.5 } == true
+        }
+        let resourcePeak = resourceMarks.values.contains { channels in
+            channels.contains { role, marks in
+                marks.last.map { $0.amount >= Self.resourceReference(role) * 0.02 &&
+                    clock - $0.time >= 0 && clock - $0.time < 1.5 } == true
+            }
+        }
+        return Self.adaptiveFrameRate(visible: visible, mini: miniMode,
+                                      reducedMotion: reduceMotion || NSWorkspace.shared.accessibilityDisplayShouldReduceMotion,
+                                      fixedTime: observationTime != nil, recentPeak: outputPeak || resourcePeak,
+                                      drawCost: [drawCostEMA, processFrameCostEMA].compactMap { $0 }.max())
+    }
+
+    /// The independent presentation clock only requests a redraw. It never
+    /// republishes SwiftUI state, records counters or rebuilds session geometry.
+    func presentationTick() {
+        guard observationTime == nil else { return }
+        needsDisplay = true
+    }
+
+    /// Explicit time drives both sampling and drawing for deterministic exports.
+    /// Normal updates leave the clock live.
+    func update(_ model: PanelModel, now explicitTime: TimeInterval? = nil) {
+        self.model = model
+        observationTime = explicitTime.flatMap { $0.isFinite ? $0 : nil }
+        if observationTime != nil { processCPUReading = nil; lastCPUPoll = nil }
+        let now = visualNow
         let wasConnected = connected
         connected = model.connected
         connectionState = model.connectionState
@@ -366,6 +498,9 @@ final class BubbleView: NSView {
         }
         levels = levels.filter { order.contains($0.key) }
         observingSince = observingSince.filter { order.contains($0.key) }
+        waveTransitions = waveTransitions.filter { key, _ in
+            workingKeys.contains(key.node) && now - key.bucketStart < 24
+        }
         if !nodes.contains(where: { $0.key == hoveredName }) { hoveredName = nil }
         configureRings()
         let style = ThemePalette.waveStyle(waveStyle)
@@ -386,7 +521,7 @@ final class BubbleView: NSView {
         let summary = connected ? "\(runningCount) 个运行中，\(waitingCount) 个等待输入，待我 \(pendingCountText)，久等 \(overdueCount)，\(longestWaitText)，\(errorCount) 个异常" : model.message
         let descriptions = nodes.map { $0.name + "（" + $0.agent + "）：" + $0.status + ($0.summary.isEmpty ? "" : "，" + $0.summary) + ($0.running ? "，" + liveText($0) : "") + ($0.responseText.isEmpty ? "" : "，" + $0.responseText) + "，" + $0.timingSummary + (waveResources ? "，" + resourceSummary($0.resources) : "") }.joined(separator: "\n")
         let usageSummary = usage?.accessibilitySummary(connected: connected) ?? "用量暂不可用"
-        overviewToolTip = summary + "\n" + usageSummary + "\n" + descriptions + "\n名称旁细弧：等待色为空闲，运行色为工作；悬停查看具体时长。\n声浪仅显示运行会话近24秒活动，顺时针从旧到新" + (waveResources ? "；资源通道在同一圈叠加。" : "；会话组共享声浪。") + "\n单击切换大小，双击打开面板，拖动移动；右键查看更多操作"
+        overviewToolTip = summary + "\n" + usageSummary + "\n" + descriptions + "\n名称旁细弧：等待色为空闲，运行色为工作；悬停查看具体时长。\n声浪仅显示运行会话近24秒活动，顺时针从旧到新" + (waveResources ? "；输出光带、I/O分段柱、工具针菱形、网络细曲线叠在同一圈，内存为静态细弧。" : "；会话组共享声浪。") + "\n单击切换大小，双击打开面板，拖动移动；右键可打开声浪图说明。"
         updateToolTip()
         accessibilityOverview = summary + "，" + usageSummary + "，" + descriptions.replacingOccurrences(of: "\n", with: "，")
         setAccessibilityLabel((miniMode ? "小号悬浮球，" : "完整会话环，") + accessibilityOverview)
@@ -399,7 +534,9 @@ final class BubbleView: NSView {
         let paneKeys = Dictionary(rows.map { ($0.paneId, $0.orbitKey) }, uniquingKeysWith: { first, _ in first })
         outputMarks = outputMarks.reduce(into: [:]) { result, item in
             guard sessions.contains(item.key) else { return }
-            result[item.key] = item.value.filter { now - $0.time < 24 && eligible.contains($0.paneId) && paneKeys[$0.paneId] == item.key }
+            let retained = item.value.filter { now - $0.time < 24 && eligible.contains($0.paneId) && paneKeys[$0.paneId] == item.key }
+            if retained.count != item.value.count { clearGeometry(node: item.key, role: .output) }
+            result[item.key] = retained
         }
         outputReadings = outputReadings.filter { ids.contains($0.key) }
         guard connected else { outputReadings.removeAll(); outputActivePanes.removeAll(); outputMarks.removeAll(); return }
@@ -413,12 +550,17 @@ final class BubbleView: NSView {
                 }
             } else {
                 // An epoch change only clears that pane, preserving the other group members' output.
+                clearGeometry(node: pane.orbitKey, role: .output)
                 outputMarks[pane.orbitKey]?.removeAll { $0.paneId == pane.paneId }
                 if outputMarks[pane.orbitKey]?.isEmpty != false { observingSince[pane.orbitKey] = now }
             }
             outputReadings[pane.paneId] = (epoch, total)
         }
         outputActivePanes = eligible
+    }
+
+    private func clearGeometry(node: String, role: ResourceRole) {
+        waveTransitions = waveTransitions.filter { $0.key.node != node || $0.key.role != role }
     }
 
     private func resourceIdentity(_ pane: Pane) -> String? {
@@ -433,6 +575,7 @@ final class BubbleView: NSView {
 
     private func resourceState(_ rows: [Pane], expectedRows: Int) -> ResourceState {
         var result = ResourceState()
+        result.outputKnown = rows.contains { $0.activityEpoch != nil && ($0.outputTotal ?? -1) >= 0 }
         var unique: [String: Pane] = [:]
         for pane in rows {
             guard let key = resourceIdentity(pane), let value = pane.resources else { continue }
@@ -452,12 +595,21 @@ final class BubbleView: NSView {
         }
         if !hosts.isEmpty { result.hostMemoryBytes = hosts.values.reduce(0, +) }
         func rate(_ value: Double?) -> Double? { value.flatMap { $0.isFinite && $0 >= 0 ? $0 : nil } }
+        func observedEvents(_ role: ResourceRole, available: (ResourceMetrics) -> Bool) -> Bool {
+            unique.values.contains { pane in
+                guard let resource = pane.resources, available(resource), let identity = resourceIdentity(pane) else { return false }
+                return resourceMarks[pane.orbitKey]?[role]?.contains {
+                    $0.identity == "resource:" + identity && $0.amount > 0
+                } == true
+            }
+        }
         let io = resources.filter { $0.ioAvailable == true }
         let ioRates = io.compactMap { value -> Double? in
             let directions = [rate(value.ioReadPerSecond), rate(value.ioWritePerSecond)].compactMap { $0 }
             return directions.isEmpty ? nil : directions.reduce(0, +)
         }
         if !ioRates.isEmpty { result.ioRate = ioRates.reduce(0, +) }
+        result.ioKnown = !ioRates.isEmpty || observedEvents(.io, available: { $0.ioAvailable == true })
         result.ioPartial = missingResources || ioRates.count < resources.count || io.contains { $0.ioComplete != true || rate($0.ioReadPerSecond) == nil || rate($0.ioWritePerSecond) == nil }
         let network = resources.filter { $0.networkAvailable == true }
         let networkRates = network.compactMap { value -> Double? in
@@ -466,6 +618,7 @@ final class BubbleView: NSView {
         }
         result.networkShared = network.contains { $0.networkShared == true }
         if !networkRates.isEmpty { result.networkRate = result.networkShared ? networkRates.max() : networkRates.reduce(0, +) }
+        result.networkKnown = !networkRates.isEmpty || observedEvents(.network, available: { $0.networkAvailable == true })
         result.networkPartial = missingResources || networkRates.count < resources.count || network.contains { $0.networkComplete != true || rate($0.networkRxPerSecond) == nil || rate($0.networkTxPerSecond) == nil }
         result.processShared = resources.contains { $0.scope == "shared_process" }
         var tools: [String: UsageMetrics] = [:]
@@ -519,8 +672,11 @@ final class BubbleView: NSView {
             }
         }
         for key in Array(resourceMarks.keys) {
-            resourceMarks[key] = resourceMarks[key]?.mapValues { marks in
-                marks.filter { validTargets[$0.identity]?.contains(key) == true }
+            for role in resourceMarks[key].map({ Array($0.keys) }) ?? [] {
+                let marks = resourceMarks[key]?[role] ?? []
+                let retained = marks.filter { validTargets[$0.identity]?.contains(key) == true }
+                if retained.count != marks.count { clearGeometry(node: key, role: role) }
+                resourceMarks[key]?[role] = retained
             }
         }
         guard connected else {
@@ -538,7 +694,11 @@ final class BubbleView: NSView {
         }
         func clear(_ identity: String) {
             for key in Array(resourceMarks.keys) {
-                resourceMarks[key] = resourceMarks[key]?.mapValues { $0.filter { $0.identity != identity } }
+                for role in resourceMarks[key].map({ Array($0.keys) }) ?? [] {
+                    let marks = resourceMarks[key]?[role] ?? []
+                    if marks.contains(where: { $0.identity == identity }) { clearGeometry(node: key, role: role) }
+                    resourceMarks[key]?[role] = marks.filter { $0.identity != identity }
+                }
             }
         }
         func append(_ key: String, _ role: ResourceRole, _ amount: Double, _ identity: String) {
@@ -569,7 +729,7 @@ final class BubbleView: NSView {
                 for key in priorTargets {
                     let io = [delta(value.ioReadBytes, old.read), delta(value.ioWriteBytes, old.write)].compactMap { $0 }
                     if value.ioAvailable == true, !io.isEmpty {
-                        append(key, .output, io.reduce(0, +), markIdentity)
+                        append(key, .io, io.reduce(0, +), markIdentity)
                     }
                     let network = [delta(value.networkRxBytes, old.received), delta(value.networkTxBytes, old.sent)].compactMap { $0 }
                     if value.networkAvailable == true, !network.isEmpty {
@@ -671,7 +831,7 @@ final class BubbleView: NSView {
             (node.responseText.isEmpty ? "" : "\n" + node.responseText) +
             (node.summary.isEmpty ? "" : "\n" + node.summary) +
             (node.manualRunning ? "\n手动运行标记有效；收到新的回复结果后自动解除，可右键取消。错误或离线优先显示。" : "") +
-            (waveResources ? "\n" + resourceSummary(node.resources) : "")
+            (waveResources ? "\n" + resourceSummary(node.resources) + "\n" + resourceScaleSummary(node) : "")
     }
 
     private func isWorkText(_ text: String) -> Bool {
@@ -729,6 +889,16 @@ final class BubbleView: NSView {
     }
 
     override func draw(_ dirtyRect: NSRect) {
+        let drawingStarted = ProcessInfo.processInfo.systemUptime
+        defer {
+            if observationTime == nil {
+                drawnFrames &+= 1
+                let elapsed = ProcessInfo.processInfo.systemUptime - drawingStarted
+                if elapsed.isFinite, elapsed > 0 {
+                    drawCostEMA = drawCostEMA.map { $0 * 0.85 + elapsed * 0.15 } ?? elapsed
+                }
+            }
+        }
         super.draw(dirtyRect)
         let center = NSPoint(x: bounds.midX, y: bounds.midY)
         if miniMode { drawMini(center); return }
@@ -750,9 +920,9 @@ final class BubbleView: NSView {
         NSGraphicsContext.restoreGraphicsState()
         tint.withAlphaComponent(0.16).setStroke(); body.lineWidth = 0.6; body.stroke()
         let reducedMotion = reduceMotion || NSWorkspace.shared.accessibilityDisplayShouldReduceMotion
-        let time = reducedMotion ? 0 : CGFloat(ProcessInfo.processInfo.systemUptime)
+        let time = reducedMotion ? 0 : CGFloat(visualNow)
         for (ringIndex, ring) in rings.enumerated() {
-            drawWaves(center, ring: ring, inner: ringIndex > 0, now: ProcessInfo.processInfo.systemUptime, reducedMotion: reducedMotion)
+            drawWaves(center, ring: ring, inner: ringIndex > 0, now: visualNow, reducedMotion: reducedMotion)
             let radius = ring.radius - 20
             let orbit = NSBezierPath(ovalIn: NSRect(x: center.x - radius, y: center.y - radius, width: radius * 2, height: radius * 2))
             ThemePalette.ns(.accent).withAlphaComponent(0.13).setStroke(); orbit.lineWidth = 0.6; orbit.stroke()
@@ -771,7 +941,7 @@ final class BubbleView: NSView {
                 drawTimingArc(node, center: center, radius: ring.radius - 11, theta: theta, span: span)
                 if node.running {
                     let position = point(center, radius, theta)
-                    let age = outputMarks[node.key]?.last.map { ProcessInfo.processInfo.systemUptime - $0.time }
+                    let age = outputMarks[node.key]?.last.map { visualNow - $0.time }
                     node.color.withAlphaComponent(age.map { $0 < 1.5 } == true ? 1 : 0.35).setFill()
                     NSBezierPath(ovalIn: NSRect(x: position.x - 1.5, y: position.y - 1.5, width: 3, height: 3)).fill()
                 }
@@ -931,18 +1101,146 @@ final class BubbleView: NSView {
         }
     }
 
-    private func resourceEnergy(_ amount: Double, reference: Double) -> CGFloat {
-        guard amount.isFinite, amount > 0 else { return 0 }
-        return CGFloat(min(1, log1p(amount * Double(waveSensitivity)) / log1p(reference)))
+    /// A positive logarithmic response with a soft shoulder, never a hard clip.
+    /// Every bucket in one channel uses the same 24-second peak and unit reference.
+    static func resourceEnergy(_ rate: Double?, recentPeak: Double?, reference: Double,
+                               sensitivity: Double = 1) -> CGFloat? {
+        guard let rate = rate, rate.isFinite, rate >= 0, reference.isFinite, reference > 0,
+              sensitivity.isFinite, sensitivity > 0 else { return nil }
+        guard rate > 0 else { return 0 }
+        let peak = recentPeak.flatMap { $0.isFinite && $0 > 0 ? $0 : nil } ?? rate
+        let scale = max(reference, peak / 4)
+        // Stable log(1 + rate * sensitivity / scale), including very large counters.
+        let logRatio = log(rate) + log(sensitivity) - log(scale)
+        let response = logRatio > 0 ? logRatio + log1p(exp(-logRatio)) : log1p(exp(logRatio))
+        return CGFloat(response / (response + 0.72))
+    }
+
+    /// Geometry moves monotonically between heights backed by real data. A zero
+    /// or unavailable target clears immediately instead of leaving a fake tail.
+    static func interpolatedWaveHeight(from: CGFloat?, to target: CGFloat?, elapsed: TimeInterval) -> CGFloat? {
+        guard let target = target, target.isFinite, target >= 0 else { return nil }
+        guard target > 0 else { return 0 }
+        let beginning = from.flatMap { $0.isFinite && $0 >= 0 ? $0 : nil } ?? target
+        let progress = elapsed.isFinite ? min(1, max(0, elapsed / waveTransitionDuration)) : 1
+        let eased = CGFloat(progress * progress * (3 - 2 * progress))
+        return beginning + (target - beginning) * eased
+    }
+
+    func presentedHeight(_ target: CGFloat, node: String, role: ResourceRole,
+                         bucket: WaveBucket, now: TimeInterval, reducedMotion: Bool) -> CGFloat {
+        let key = GeometryKey(node: node, role: role, bucketStart: bucket.startTime)
+        guard target > 0 else { waveTransitions.removeValue(forKey: key); return 0 }
+        guard !reducedMotion, observationTime == nil else { waveTransitions.removeValue(forKey: key); return target }
+        if let transition = waveTransitions[key] {
+            if abs(transition.target - target) > 0.01 {
+                let current = transition.height(at: now)
+                let next = GeometryTransition(from: current, target: target, startedAt: now)
+                waveTransitions[key] = next
+                return current
+            }
+            return transition.height(at: now)
+        }
+        let age = bucket.newest.map { now - $0 } ?? .infinity
+        let isNewEvent = age >= 0 && age < Self.waveTransitionDuration
+        let beginning = isNewEvent ? target * 0.35 : target
+        let transition = GeometryTransition(from: beginning, target: target,
+                                            startedAt: bucket.newest ?? now - Self.waveTransitionDuration)
+        waveTransitions[key] = transition
+        return transition.height(at: now)
+    }
+
+    static func resourceReference(_ role: ResourceRole) -> Double {
+        switch role {
+        case .output: return 40           // Output activity units, never bytes.
+        case .io: return 16_384           // System-call bytes per second.
+        case .tools: return 0.75          // Completed tool results per second.
+        case .network: return 4_096       // Observed TCP bytes per second.
+        case .memory: return 1           // Occupancy has no dynamic amplitude.
+        }
+    }
+
+    /// One pass assigns genuine positive events to the shared old-to-new timeline.
+    static func resourceBuckets(_ events: [WaveEvent], now: TimeInterval, count: Int) -> [WaveBucket] {
+        guard now.isFinite, (1...128).contains(count) else { return [] }
+        let width = 24 / Double(count)
+        let end = floor(now / width) * width + width
+        let start = end - 24
+        var buckets = (0..<count).map { WaveBucket(startTime: start + Double($0) * width) }
+        for event in events {
+            guard event.time.isFinite, event.amount.isFinite, event.amount > 0,
+                  event.time <= now, now - event.time < 24, event.time >= start else { continue }
+            let index = Int(floor((event.time - start) / width))
+            guard buckets.indices.contains(index) else { continue }
+            let rate = event.amount / width
+            let total = buckets[index].rate + rate
+            buckets[index].rate = total.isFinite ? total : Double.greatestFiniteMagnitude
+            buckets[index].newest = max(buckets[index].newest ?? event.time, event.time)
+        }
+        return buckets
+    }
+
+    /// Read-only signal profiles are also used by deterministic screenshot fixtures.
+    /// Unknown channels are absent; known quiet channels contain only zero buckets.
+    func resourceSignals(for key: String, count: Int = 30, now: TimeInterval? = nil) -> [ResourceRole: [WaveBucket]] {
+        guard let node = nodes.first(where: { $0.key == key }), node.running else { return [:] }
+        let clock = now ?? visualNow
+        var result: [ResourceRole: [WaveBucket]] = [:]
+        for role in Self.dynamicResourceRoles {
+            let known: Bool
+            switch role {
+            case .output: known = node.resources.outputKnown
+            case .io: known = node.resources.ioKnown
+            case .tools: known = node.resources.toolsKnown
+            case .network: known = node.resources.networkKnown
+            case .memory: known = false
+            }
+            guard known else { continue }
+            let events: [WaveEvent]
+            if role == .output {
+                events = (outputMarks[key] ?? []).map { WaveEvent(time: $0.time, amount: Double($0.amount)) }
+            } else {
+                events = (resourceMarks[key]?[role] ?? []).map { WaveEvent(time: $0.time, amount: $0.amount) }
+            }
+            result[role] = Self.resourceBuckets(events, now: clock, count: count)
+        }
+        return result
+    }
+
+    func hasPendingToolMarker(for key: String) -> Bool {
+        guard let node = nodes.first(where: { $0.key == key }), node.running else { return false }
+        return node.resources.toolsKnown && (node.resources.activeTools ?? 0) > 0
+    }
+
+    private func resourceBucketCount(inner: Bool) -> Int {
+        max(8, min(inner ? 30 : 56, Int((inner ? 19 : 30) * waveDensity)))
+    }
+
+    private func resourceScaleSummary(_ node: Node) -> String {
+        guard node.running else { return "声浪已停止；仅运行中的会话显示活动。" }
+        let inner = rings.dropFirst().contains { ring in ring.indices.contains { nodes[$0].key == node.key } }
+        let profiles = resourceSignals(for: node.key, count: resourceBucketCount(inner: inner))
+        let values = Self.dynamicResourceRoles.map { role -> String in
+            guard let peak = profiles[role]?.map(\.rate).max() else { return role.title + "未观测" }
+            let amount: String
+            switch role {
+            case .io, .network: amount = byteAmount(peak) + "/s"
+            case .tools: amount = String(format: "%.2f 结果/s", peak)
+            default: amount = String(format: "%.1f 活动/s", peak)
+            }
+            return role.title + " " + amount
+        }
+        return "近24秒桶峰值：" + values.joined(separator: " · ") +
+            "\n各通道整窗共享独立柔和标尺；高度不用于跨单位比较，输出活动不是字节或效率。" +
+            "\n输出可来自终端、日志、Token增量、后台输出或工作流事件；空心菱形仅静态标记尚未返回的工具。"
     }
 
     private func drawResourceWaves(_ center: NSPoint, ring: Ring, inner: Bool, now: TimeInterval,
                                    reducedMotion: Bool) {
         let span = CGFloat.pi * 2 / CGFloat(max(1, ring.indices.count))
         let radius = ring.radius + Self.resourceBaselineOffset(inner: inner)
-        let count = max(8, min(inner ? 30 : 56, Int((inner ? 19 : 30) * waveDensity)))
-        let bucket = 24 / Double(count)
-        let end = floor(now / bucket) * bucket + bucket
+        let count = resourceBucketCount(inner: inner)
+        let maximum: CGFloat = inner ? 4.2 : 12
         func arc(_ theta: CGFloat, _ from: CGFloat, _ to: CGFloat) -> NSBezierPath {
             let path = NSBezierPath()
             path.appendArc(withCenter: center, radius: radius,
@@ -954,78 +1252,130 @@ final class BubbleView: NSView {
             let node = nodes[nodeIndex]
             guard node.running else { continue }
             let theta = angle(slot, ring), state = node.resources
-            ThemePalette.ns(.muted).withAlphaComponent(0.14).setStroke()
-            let rail = arc(theta, -0.4, 0.4); rail.lineWidth = 0.5; rail.stroke()
+            let profiles = resourceSignals(for: node.key, count: count, now: now)
+            if profiles.values.contains(where: { $0.contains { $0.rate > 0 } }) || (state.memoryBytes ?? 0) > 0 || hasPendingToolMarker(for: node.key) {
+                ThemePalette.ns(.muted).withAlphaComponent(0.1).setStroke()
+                let rail = arc(theta, -0.4, 0.4); rail.lineWidth = 0.4; rail.stroke()
+            }
+            // Memory occupies the same baseline, with no pulse or invented activity.
             if let bytes = state.memoryBytes, bytes > 0 {
-                let memory = ThemePalette.resourceColor(.memory)
+                ThemePalette.resourceColor(.memory).withAlphaComponent(0.55).setStroke()
                 if let host = state.hostMemoryBytes, host > 0 {
-                    let extent = CGFloat(min(1, max(0.012, bytes / host)))
-                    memory.withAlphaComponent(0.52).setStroke()
+                    let extent = CGFloat(min(1, bytes / host))
                     let occupied = arc(theta, -0.4, -0.4 + 0.8 * extent)
                     occupied.lineWidth = 1; occupied.stroke()
                 } else {
-                    memory.withAlphaComponent(0.42).setStroke()
-                    for position in [CGFloat(-0.25), 0, 0.25] {
-                        let tick = arc(theta, position - 0.025, position + 0.025)
-                        tick.lineWidth = 1; tick.stroke()
-                    }
+                    let occupied = arc(theta, -0.04, 0.04)
+                    occupied.setLineDash([1, 1], count: 2, phase: 0)
+                    occupied.lineWidth = 1; occupied.stroke()
                 }
             }
-            if state.networkRate == nil || state.networkPartial {
-                drawArcText("?", center: center, radius: radius + 1, angle: theta - span * 0.44,
-                            size: inner ? 6.4 : 7.2, color: ThemePalette.ns(.muted))
-            }
-            if state.toolsKnown, let active = state.activeTools, active > 0 {
-                ThemePalette.resourceColor(.tools).withAlphaComponent(0.55).setStroke()
-                let extent = min(0.25, 0.05 + CGFloat(log1p(Double(active))) * 0.05)
-                let activeArc = arc(theta, -extent, extent); activeArc.lineWidth = 1.3; activeArc.stroke()
-            }
-            // All channels start on the same circle and at the same time bucket.
-            // Wide translucent output sits behind narrower tool/network strokes.
-            for role in [ResourceRole.output, .tools, .network] {
-                guard role == .output || role == .tools && state.toolsKnown ||
-                        role == .network && state.networkRate != nil else { continue }
-                let marks = (resourceMarks[node.key]?[role] ?? []).filter { now - $0.time >= 0 && now - $0.time < 24 }
-                let outputs = role == .output ? (outputMarks[node.key] ?? []).filter { now - $0.time >= 0 && now - $0.time < 24 } : []
+            // The four shapes share one radius and identical time buckets. Shape,
+            // transparency and stroke width separate them without concentric lanes.
+            for role in [ResourceRole.output, .io, .network, .tools] {
+                guard let buckets = profiles[role], let peak = buckets.map(\.rate).max(), peak > 0 else { continue }
+                let heights: [CGFloat] = buckets.map { bucket in
+                    guard bucket.rate > 0, let energy = Self.resourceEnergy(bucket.rate, recentPeak: peak,
+                          reference: Self.resourceReference(role), sensitivity: Double(waveSensitivity)) else { return 0 }
+                    return presentedHeight(max(0.2, energy * maximum * waveHeight), node: node.key,
+                                           role: role, bucket: bucket, now: now, reducedMotion: reducedMotion)
+                }
+                func direction(_ index: Int) -> CGFloat {
+                    theta + span * (0.4 - 0.8 * CGFloat(index) / CGFloat(max(1, count - 1)))
+                }
+                if role == .output {
+                    var first = 0
+                    while first < count {
+                        guard heights[first] > 0 else { first += 1; continue }
+                        var last = first
+                        while last + 1 < count && heights[last + 1] > 0 { last += 1 }
+                        let half = span * 0.8 / CGFloat(max(1, count - 1)) * 0.42
+                        let from = direction(first) + half, to = direction(last) - half
+                        let band = NSBezierPath(), crest = NSBezierPath()
+                        band.move(to: point(center, radius, from))
+                        let beginning = point(center, radius + heights[first], from)
+                        band.line(to: beginning); crest.move(to: beginning)
+                        for index in first...last {
+                            let peak = point(center, radius + heights[index], direction(index))
+                            band.line(to: peak); crest.line(to: peak)
+                        }
+                        let ending = point(center, radius + heights[last], to)
+                        band.line(to: ending); crest.line(to: ending)
+                        band.line(to: point(center, radius, to))
+                        band.appendArc(withCenter: center, radius: radius, startAngle: to * 180 / .pi,
+                                       endAngle: from * 180 / .pi, clockwise: false)
+                        band.close()
+                        ThemePalette.resourceColor(role).withAlphaComponent(0.14).setFill(); band.fill()
+                        ThemePalette.resourceColor(role).withAlphaComponent(0.44).setStroke()
+                        crest.lineWidth = inner ? 0.45 : 0.7; crest.stroke()
+                        first = last + 1
+                    }
+                    continue
+                }
+                var previous: (index: Int, height: CGFloat, angle: CGFloat)?
                 for index in 0..<count {
-                    let fraction = CGFloat(index) / CGFloat(max(1, count - 1))
-                    let theta = theta + span * (0.4 - 0.8 * fraction)
-                    let start = end - Double(count - index) * bucket
-                    let events = marks.filter { $0.time >= start && $0.time < start + bucket }
-                    let activity = outputs.filter { $0.time >= start && $0.time < start + bucket }
-                    let amount = events.reduce(0) { $0 + $1.amount }
-                    let output = activity.reduce(0) { $0 + Double($1.amount) }
-                    guard amount > 0 || output > 0 else { continue }
-                    let energy: CGFloat
-                    switch role {
-                    case .output: energy = max(resourceEnergy(output / bucket, reference: 2000), resourceEnergy(amount / bucket, reference: 65536))
-                    case .tools: energy = resourceEnergy(amount / bucket, reference: 3)
-                    default: energy = resourceEnergy(amount / bucket, reference: 32768)
+                    guard heights[index] > 0 else { previous = nil; continue }
+                    let position = direction(index), height = heights[index]
+                    let tone = ThemePalette.resourceColor(role, fraction: CGFloat(index) / CGFloat(max(1, count - 1)))
+                    let tip = point(center, radius + height, position)
+                    let age = max(0, now - (buckets[index].newest ?? now))
+                    let fresh = reducedMotion ? CGFloat(0) : CGFloat(max(0, 1 - age / 1.5))
+                    if role == .io {
+                        let segments = NSBezierPath()
+                        let pitch: CGFloat = inner ? 1.45 : 2.35
+                        var offset: CGFloat = 0
+                        while offset < height {
+                            segments.move(to: point(center, radius + offset, position))
+                            segments.line(to: point(center, radius + min(height, offset + pitch * 0.67), position))
+                            offset += pitch
+                        }
+                        tone.withAlphaComponent(0.66 + fresh * 0.1).setStroke()
+                        segments.lineWidth = inner ? 0.8 : 1.45; segments.stroke()
+                    } else if role == .network {
+                        if let previous = previous, previous.index + 1 == index {
+                            let line = NSBezierPath()
+                            line.move(to: point(center, radius + previous.height, previous.angle))
+                            let middle = (previous.angle + position) / 2
+                            line.curve(to: tip,
+                                       controlPoint1: point(center, radius + previous.height, middle),
+                                       controlPoint2: point(center, radius + height, middle))
+                            tone.withAlphaComponent(0.82).setStroke()
+                            line.lineWidth = inner ? 0.55 : 0.8; line.stroke()
+                        }
+                        let tangent = NSPoint(x: -sin(position), y: cos(position))
+                        let half: CGFloat = inner ? 0.65 : 1.25
+                        let cap = NSBezierPath()
+                        cap.move(to: NSPoint(x: tip.x - tangent.x * half, y: tip.y - tangent.y * half))
+                        cap.line(to: NSPoint(x: tip.x + tangent.x * half, y: tip.y + tangent.y * half))
+                        tone.withAlphaComponent(0.95).setStroke(); cap.lineWidth = 0.7; cap.stroke()
+                    } else if role == .tools {
+                        let needle = NSBezierPath()
+                        needle.move(to: point(center, radius, position)); needle.line(to: tip)
+                        tone.withAlphaComponent(0.86).setStroke(); needle.lineWidth = inner ? 0.6 : 0.85; needle.stroke()
+                        let half: CGFloat = min(height * 0.45, inner ? 1 : 1.65)
+                        let diamond = NSBezierPath()
+                        for (offset, angularOffset) in [(half, CGFloat(0)), (0, half / radius), (-half, 0), (0, -half / radius)] {
+                            let vertex = point(center, radius + height + offset, position + angularOffset)
+                            if diamond.isEmpty { diamond.move(to: vertex) } else { diamond.line(to: vertex) }
+                        }
+                        diamond.close(); tone.withAlphaComponent(0.92).setFill(); diamond.fill()
                     }
-                    let floor: CGFloat = inner ? 1.7 : role == .output ? 3.5 : role == .tools ? 4.2 : 4.8
-                    let ceiling: CGFloat = inner ? 4.2 : role == .output ? 10 : role == .tools ? 9 : 8
-                    let height = (floor + (ceiling - floor) * energy) * waveHeight
-                    let newest = max(events.last?.time ?? 0, activity.last?.time ?? 0)
-                    let flash = reducedMotion ? CGFloat(0) : CGFloat(max(0, 1 - max(0, now - newest) / 1.5))
-                    let tone = ThemePalette.resourceColor(role, fraction: fraction)
-                    let width: CGFloat = (role == .output ? 3.2 : role == .tools ? 1.8 : 0.85) * (inner ? 0.65 : 1)
-                    let opacity: CGFloat = role == .output ? 0.28 : role == .tools ? 0.66 : 0.95
-                    let segments = NSBezierPath()
-                    let pitch: CGFloat = inner ? 1.6 : 2.6
-                    var offset: CGFloat = 0
-                    while offset < height {
-                        segments.move(to: point(center, radius + offset, theta))
-                        segments.line(to: point(center, radius + min(height, offset + pitch * 0.75), theta))
-                        offset += pitch
-                    }
-                    tone.withAlphaComponent(min(1, opacity + flash * 0.08)).setStroke()
-                    segments.lineWidth = width; segments.stroke()
-                    let peak = NSBezierPath()
-                    peak.move(to: point(center, radius + height, theta - 0.003))
-                    peak.line(to: point(center, radius + height, theta + 0.003))
-                    tone.withAlphaComponent(min(1, opacity + 0.15)).setStroke()
-                    peak.lineWidth = 0.9; peak.stroke()
+                    previous = (index, height, position)
                 }
+            }
+            if hasPendingToolMarker(for: node.key) {
+                // Pending tools are occupancy, not completed events: no mark,
+                // amplitude or clock-driven pulse is added to their history.
+                let latest = theta - span * 0.4
+                let half: CGFloat = inner ? 1 : 1.75
+                let marker = NSBezierPath()
+                for (offset, angularOffset) in [(half, CGFloat(0)), (0, half / radius), (-half, 0), (0, -half / radius)] {
+                    let vertex = point(center, radius + offset, latest + angularOffset)
+                    if marker.isEmpty { marker.move(to: vertex) } else { marker.line(to: vertex) }
+                }
+                marker.close()
+                ThemePalette.resourceColor(.tools).withAlphaComponent(0.9).setStroke()
+                marker.lineWidth = inner ? 0.65 : 0.85; marker.stroke()
             }
         }
     }
@@ -1248,7 +1598,7 @@ final class BubbleView: NSView {
         let radius = (rings.last?.radius ?? orbitRadius) - 25
         let scale = min(1.12, radius / 51)
         let energy = activity
-        let hasRecentOutput = outputMarks.values.contains { $0.last.map { ProcessInfo.processInfo.systemUptime - $0.time < 2.5 } == true }
+        let hasRecentOutput = outputMarks.values.contains { $0.last.map { visualNow - $0.time < 2.5 } == true }
         let pulse: CGFloat = connected && runningCount > 0 && energy > 0.001 && hasRecentOutput && !reducedMotion ? (sin(time * 1.8) + 1) / 2 : 0
         let glowRadius = radius * (0.78 + energy * 0.12 + pulse * 0.025)
         let core = NSBezierPath(ovalIn: NSRect(x: center.x - glowRadius, y: center.y - glowRadius, width: glowRadius * 2, height: glowRadius * 2))
@@ -1316,7 +1666,7 @@ final class BubbleView: NSView {
         let baseline = NSBezierPath()
         baseline.move(to: NSPoint(x: rect.minX, y: rect.minY)); baseline.line(to: NSPoint(x: rect.maxX, y: rect.minY))
         ThemePalette.ns(.muted).withAlphaComponent(0.2).setStroke(); baseline.lineWidth = 0.5; baseline.stroke()
-        let now = ProcessInfo.processInfo.systemUptime
+        let now = visualNow
         var segment: [NSPoint] = []
         var previous: TimeInterval?
         func flush() {
@@ -1469,11 +1819,18 @@ final class BubbleView: NSView {
             list.submenu = targets
             menu.addItem(.separator())
         }
+        let guide = menu.addItem(withTitle: "声浪图说明…", action: #selector(openWaveGuide(_:)), keyEquivalent: "")
+        guide.target = self
+        guide.identifier = NSUserInterfaceItemIdentifier("orbit.waveGuide")
         let open = menu.addItem(withTitle: "打开面板", action: #selector(openPanel(_:)), keyEquivalent: "")
         open.target = self
         let toggle = menu.addItem(withTitle: miniMode ? "放大为完整会话环" : "缩小为小号悬浮球", action: #selector(toggleSize(_:)), keyEquivalent: "")
         toggle.target = self
         return menu
+    }
+
+    @objc private func openWaveGuide(_ sender: Any?) {
+        NotificationCenter.default.post(name: Notification.Name("AgentOrbit.OpenWaveGuide"), object: nil)
     }
 
     private func addManualActions(to menu: NSMenu, node: Node) {

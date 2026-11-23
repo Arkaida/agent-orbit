@@ -163,17 +163,20 @@ struct SettingsView: View {
             }
             Section("外围声浪") {
                 Toggle("多层资源声浪", isOn: $draft.waveResources).disabled(draft.waveStyle == "off")
-                HStack(spacing: 12) {
+                HStack(spacing: 10) {
                     ForEach(ResourceRole.allCases, id: \.self) { role in
                         HStack(spacing: 4) {
-                            Circle().fill(Color(nsColor: PaletteResolver(theme: draft.theme, statusStyle: draft.orbitLabelColor).resourceColor(role)))
-                                .frame(width: 6, height: 6)
+                            Image(systemName: role.symbolName)
+                                .foregroundColor(Color(nsColor: PaletteResolver(theme: draft.theme, statusStyle: draft.orbitLabelColor).resourceColor(role)))
                             Text(role.title)
-                        }
+                        }.help(role.graphicDescription + "\n" + role.description)
                     }
-                }.font(.system(size: 10)).foregroundColor(ThemePalette.ui(.text))
-                Text("输出/I/O、工具、网络在同一圈叠加，内存为静态标记；仅运行会话显示声浪。各通道颜色随皮肤切换，悬停可查看数值。")
+                }.font(.system(size: 10)).foregroundColor(PaletteResolver(theme: draft.theme, statusStyle: draft.orbitLabelColor).ui(.text))
+                Text("输出、进程 I/O、工具与网络共用一圈基线，展示最近 24 秒；内存是静态细弧。没有活动不画起伏，未知不填零，等待时收起。")
                     .font(.caption).foregroundColor(ThemePalette.ui(.muted))
+                Button("声浪图说明…") {
+                    NotificationCenter.default.post(name: Notification.Name("AgentOrbit.OpenWaveGuide"), object: nil)
+                }.help("查看五种信号的形状、含义与观测范围，不会改变当前设置")
                 Picker("样式", selection: $draft.waveStyle) {
                     Text("跟随皮肤").tag("theme")
                     Text("全息声浪柱 · 分段峰值").tag("bars")

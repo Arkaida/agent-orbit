@@ -1,7 +1,7 @@
 import AppKit
 import SwiftUI
 
-struct SessionResponse: Decodable {
+struct SessionResponse: Decodable, Equatable {
     var kind: String
     var episodeId: String?
     var since: Double?
@@ -23,7 +23,7 @@ struct SessionResponse: Decodable {
     }
 }
 
-struct SessionResponseGroup: Decodable {
+struct SessionResponseGroup: Decodable, Equatable {
     var id: String
     var name: String
     var members: [String]?
@@ -51,7 +51,7 @@ struct SessionResponseGroup: Decodable {
     }
 }
 
-struct Pane: Decodable, Identifiable {
+struct Pane: Decodable, Identifiable, Equatable {
     var paneId: String
     var session: String
     var state: String
@@ -127,28 +127,28 @@ struct Pane: Decodable, Identifiable {
     var id: String { paneId }
 }
 
-struct Completion: Decodable, Identifiable {
+struct Completion: Decodable, Identifiable, Equatable {
     var id: String
     var paneId: String
     var session: String
     var completedAt: Double
 }
 
-struct SourceConnection: Decodable, Identifiable {
+struct SourceConnection: Decodable, Identifiable, Equatable {
     var id: String
     var label: String
     var connected: Bool
     var connectionState: String
     var message: String
 }
-struct LocalSession: Decodable, Identifiable {
+struct LocalSession: Decodable, Identifiable, Equatable {
     var threadId: String?
     var session: String
     var id: String { threadId ?? session }
 }
 
 /// Aggregate counters come only from CLI usage records, independent of visual activity.
-struct UsageMetrics: Decodable {
+struct UsageMetrics: Decodable, Equatable {
     var utilizationPercent: Double?
     var runningSessions: Int?
     var knownSessions: Int?
@@ -280,7 +280,7 @@ struct UsageMetrics: Decodable {
 }
 
 /// Resource observations describe process ownership, independently of task state.
-struct ResourceMetrics: Decodable {
+struct ResourceMetrics: Decodable, Equatable {
     var identity: String?
     var epoch: String?
     var sampleId: Int?
@@ -454,7 +454,7 @@ struct Snapshot: Decodable {
     var metrics: UsageMetrics?
 }
 
-struct ErrorEvent: Decodable, Identifiable {
+struct ErrorEvent: Decodable, Identifiable, Equatable {
     var id: String
     var paneId: String
     var session: String
@@ -545,11 +545,16 @@ final class PanelModel: ObservableObject {
     @Published var unread: [Completion] = []
     @Published var unreadErrors: [ErrorEvent] = []
     @Published var sound = UserDefaults.standard.object(forKey: "sound") as? Bool ?? true {
-        didSet { settings.sound = sound; persistSettings(); onUpdate?() }
+        didSet {
+            guard sound != oldValue else { return }
+            if settings.sound != sound { settings.sound = sound; persistSettings() }
+            onUpdate?()
+        }
     }
     @Published var pinned = UserDefaults.standard.object(forKey: "pinned") as? Bool ?? true {
         didSet {
-            settings.pinned = pinned; persistSettings()
+            guard pinned != oldValue else { return }
+            if settings.pinned != pinned { settings.pinned = pinned; persistSettings() }
             onPin?(pinned)
         }
     }
@@ -678,7 +683,7 @@ final class PanelModel: ObservableObject {
         root = URL(fileURLWithPath: argument("--project", fallback: bundled?.path ?? Bundle.main.bundleURL.deletingLastPathComponent().path))
         let support = NSHomeDirectory() + "/Library/Application Support/"
         let preferred = support + "Agent Orbit", legacyData = support + "Codex Remote"
-        let demoMode = CommandLine.arguments.contains("--demo") || CommandLine.arguments.contains("--export-demo")
+        let demoMode = CommandLine.arguments.contains("--demo") || CommandLine.arguments.contains("--export-demo") || CommandLine.arguments.contains("--export-signals")
         let defaultData = demoMode ? FileManager.default.temporaryDirectory.appendingPathComponent("agent-orbit-demo-\(ProcessInfo.processInfo.processIdentifier)").path : FileManager.default.fileExists(atPath: legacyData) && !FileManager.default.fileExists(atPath: preferred) ? legacyData : preferred
         dataRoot = URL(fileURLWithPath: argument("--data-dir", fallback: demoMode ? defaultData : ProcessInfo.processInfo.environment["AGENT_ORBIT_DATA_DIR"] ?? ProcessInfo.processInfo.environment["CODEX_REMOTE_DATA_DIR"] ?? defaultData))
         var initial = AppSettings()
@@ -707,16 +712,24 @@ final class PanelModel: ObservableObject {
     }
 
     func persistSettings() {
-        if let data = try? settings.encoded() { try? data.write(to: dataRoot.appendingPathComponent("settings.json"), options: .atomic) }
+        let url = dataRoot.appendingPathComponent("settings.json")
+        if let data = try? settings.encoded(), (try? Data(contentsOf: url)) != data {
+            try? data.write(to: url, options: .atomic)
+        }
     }
 
     func saveSettings(_ value: AppSettings, follow: String) throws {
         try value.validate()
         let encoded = try value.encoded()
         try saveFollow(follow)
-        try encoded.write(to: dataRoot.appendingPathComponent("settings.json"), options: .atomic)
-        ThemePalette.configure(theme: value.theme, statusStyle: value.orbitLabelColor)
-        settings = value; sound = value.sound; pinned = value.pinned
+        let url = dataRoot.appendingPathComponent("settings.json")
+        if (try? Data(contentsOf: url)) != encoded { try encoded.write(to: url, options: .atomic) }
+        if settings.theme != value.theme || settings.orbitLabelColor != value.orbitLabelColor {
+            ThemePalette.configure(theme: value.theme, statusStyle: value.orbitLabelColor)
+        }
+        if (try? settings.encoded()) != encoded { settings = value }
+        if sound != value.sound { sound = value.sound }
+        if pinned != value.pinned { pinned = value.pinned }
         onUpdate?()
     }
 
@@ -816,45 +829,57 @@ final class PanelModel: ObservableObject {
     func apply(_ snapshot: Snapshot) {
         lastPacket = Date()
         localOutageAlerted = false
-        connections = snapshot.connections ?? []
-        localSessions = snapshot.localSessions ?? []
-        metrics = snapshot.metrics
-        rows = snapshot.rows
-        followed = snapshot.followed
-        connected = snapshot.connected
-        connectionState = snapshot.connectionState ?? (snapshot.connected ? "live" : "reconnecting")
-        message = snapshot.message
+        // Heartbeats keep freshness/reminder clocks alive without republishing
+        // identical arrays into every SwiftUI subscriber. Every real edge and
+        // event still passes through this method, independently of drawing FPS.
+        var presentationChanged = false
+        let newConnections = snapshot.connections ?? []
+        let newLocalSessions = snapshot.localSessions ?? []
+        let newConnectionState = snapshot.connectionState ?? (snapshot.connected ? "live" : "reconnecting")
+        if connections != newConnections { connections = newConnections; presentationChanged = true }
+        if localSessions != newLocalSessions { localSessions = newLocalSessions; presentationChanged = true }
+        if metrics != snapshot.metrics { metrics = snapshot.metrics; presentationChanged = true }
+        if rows != snapshot.rows { rows = snapshot.rows; presentationChanged = true }
+        if followed != snapshot.followed { followed = snapshot.followed; presentationChanged = true }
+        if connected != snapshot.connected { connected = snapshot.connected; presentationChanged = true }
+        if connectionState != newConnectionState { connectionState = newConnectionState; presentationChanged = true }
+        if message != snapshot.message { message = snapshot.message; presentationChanged = true }
         let fresh = snapshot.events.filter { !seen.contains($0.id) }
         for event in fresh { seen.insert(event.id) }
         if !fresh.isEmpty {
             let paneIds = Set(fresh.map(\.paneId))
-            unread.removeAll { paneIds.contains($0.paneId) }
-            unread.insert(contentsOf: fresh.reversed(), at: 0)
-            unread = Array(unread.prefix(100))
+            unread = Array((Array(fresh.reversed()) + unread.filter { !paneIds.contains($0.paneId) }).prefix(100))
+            presentationChanged = true
             onCompletion?()
         }
-        unread.removeAll { event in
-            !rows.contains { $0.paneId == event.paneId && $0.visualState(connected: isConnected($0)) == .waiting && $0.completionId == event.id }
+        let currentUnread = unread.filter { event in
+            rows.contains { $0.paneId == event.paneId && $0.visualState(connected: isConnected($0)) == .waiting && $0.completionId == event.id }
         }
+        if unread != currentUnread { unread = currentUnread; presentationChanged = true }
         let incomingErrors = (snapshot.errorEvents ?? []).filter { !seenErrors.contains($0.id) }
         for event in incomingErrors { seenErrors.insert(event.id) }
         let freshErrors = incomingErrors.filter { !(($0.kind == "question" || $0.kind == "approval") && isResolved($0)) }
         if !freshErrors.isEmpty {
+            presentationChanged = true
             onError?()
         }
         // The delivery queue drives sounds; the active list drives cards.
         // Resolved incidents never become history cards in the panel.
         let localAlerts = unreadErrors.filter { $0.paneId == "__local__" && !connected }
         let activeErrors = snapshot.activeErrorEvents ?? (unreadErrors + freshErrors).filter { !isResolved($0) }
-        if !activeErrors.isEmpty || !unreadErrors.isEmpty {
+        var currentErrors = unreadErrors
+        if !activeErrors.isEmpty || !currentErrors.isEmpty {
             var latest: [String: ErrorEvent] = [:]
             for event in (activeErrors + localAlerts).filter({ !dismissedErrors.contains($0.id) }).sorted(by: { $0.occurredAt < $1.occurredAt }) {
                 let source = event.session == "本地监控" || event.session == "监控连接" ? event.session : event.paneId
                 latest[source] = event
             }
-            unreadErrors = Array(latest.values.sorted(by: { $0.occurredAt > $1.occurredAt }).prefix(20))
+            currentErrors = Array(latest.values.sorted(by: {
+                $0.occurredAt == $1.occurredAt ? $0.id < $1.id : $0.occurredAt > $1.occurredAt
+            }).prefix(20))
         }
-        unreadErrors.removeAll { isResolved($0) }
+        currentErrors.removeAll { isResolved($0) }
+        if unreadErrors != currentErrors { unreadErrors = currentErrors; presentationChanged = true }
         // Deliver at most one sound per update. Critical events and fresh
         // completions are heard before a waiting reminder; postponed reminders
         // remain eligible on the next fresh frame.
@@ -873,7 +898,7 @@ final class PanelModel: ObservableObject {
             let critical = settings.errorSound && freshErrors.contains(where: \.isCritical)
             NSSound(named: NSSound.Name(critical ? "Basso" : "Glass"))?.play()
         } else if !due.isEmpty { NSSound(named: NSSound.Name("Glass"))?.play() }
-        onUpdate?()
+        if presentationChanged || !due.isEmpty { onUpdate?() }
     }
 
     func acknowledge(_ pane: Pane) {
@@ -910,8 +935,9 @@ final class PanelModel: ObservableObject {
         var unique: [String] = []
         for name in names where !unique.contains(name) { unique.append(name) }
         let data = try JSONSerialization.data(withJSONObject: unique, options: [.prettyPrinted, .withoutEscapingSlashes])
-        try data.write(to: dataRoot.appendingPathComponent("follow.json"), options: .atomic)
-        followed = unique
+        let url = dataRoot.appendingPathComponent("follow.json")
+        if (try? Data(contentsOf: url)) != data { try data.write(to: url, options: .atomic) }
+        if followed != unique { followed = unique }
     }
 
     func open(_ pane: Pane) {
@@ -958,9 +984,17 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
     var bubbleView: BubbleView!
     var settingsWindow: NSWindow?
     var demoTimer: Timer?
+    private var bubbleAnimationTimer: Timer?
+    private var bubbleAnimationInterval: TimeInterval = 0
     private var minimizedByUser = false
+    private var bubbleWasHidden = true
 
     func applicationDidFinishLaunching(_ notification: Notification) {
+        if CommandLine.arguments.contains("--export-signals") {
+            do { try DemoSupport.exportSignals(model, folder: URL(fileURLWithPath: argument("--export-signals", fallback: "/tmp/agent-orbit-signals"))) }
+            catch { fputs("Signal export failed: \(error)\n", stderr) }
+            NSApp.terminate(nil); return
+        }
         if CommandLine.arguments.contains("--export-demo") {
             do { try DemoSupport.export(model, folder: URL(fileURLWithPath: argument("--export-demo", fallback: "/tmp/agent-orbit-demo"))) }
             catch { fputs("Demo export failed: \(error)\n", stderr) }
@@ -1041,6 +1075,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         bubble.isFloatingPanel = true
         bubble.level = .floating
         bubble.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary]
+        bubble.delegate = self
         bubbleView = BubbleView(frame: NSRect(x: 0, y: 0, width: 176, height: 176))
         bubbleView.restore = { [weak self] in self?.showPanel() }
         bubbleView.moved = { [weak self] in self?.keepBubbleOnScreen() }
@@ -1059,6 +1094,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         keepBubbleOnScreen()
         bubbleView.update(model)
         NotificationCenter.default.addObserver(self, selector: #selector(screensChanged), name: NSApplication.didChangeScreenParametersNotification, object: nil)
+        NotificationCenter.default.addObserver(self, selector: #selector(showWaveGuide), name: NSNotification.Name("AgentOrbit.OpenWaveGuide"), object: nil)
         model.onSettings = { [weak self] in self?.showSettings() }
         model.onPin = { [weak self] pinned in self?.panel.level = pinned ? .floating : .normal }
         model.onMinimize = { [weak self] in self?.minimizePanel() }
@@ -1082,20 +1118,58 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
     }
 
     func updateStatus() {
-        panel.alphaValue = model.settings.opacity; bubble.alphaValue = model.settings.opacity
-        panel.level = model.pinned ? .floating : .normal; bubble.level = model.pinned ? .floating : .normal
-        panel.appearance = NSAppearance(named: ThemePalette.light ? .aqua : .darkAqua)
+        if panel.alphaValue != model.settings.opacity { panel.alphaValue = model.settings.opacity }
+        if bubble.alphaValue != model.settings.opacity { bubble.alphaValue = model.settings.opacity }
+        let level: NSWindow.Level = model.pinned ? .floating : .normal
+        if panel.level != level { panel.level = level }
+        if bubble.level != level { bubble.level = level }
+        let appearance: NSAppearance.Name = ThemePalette.light ? .aqua : .darkAqua
+        if panel.appearance?.name != appearance { panel.appearance = NSAppearance(named: appearance) }
         let idle = model.rows.filter { $0.visualState(connected: model.isConnected($0)) == .waiting }.count
         let errors = model.criticalCount
-        statusItem.button?.title = !model.connected ? (model.connectionState == "delayed" ? "AO …" : "AO !") : errors > 0 ? "AO !\(errors)" : model.warningCount > 0 ? "AO ?\(model.warningCount)" : "AO \(idle)"
-        statusItem.button?.toolTip = !model.connected ? model.message : errors > 0 ? "\(errors) 个异常或中断待查看" : "\(idle) 个会话等待输入"
-        bubbleView.update(model)
+        let warnings = model.warningCount
+        let title = !model.connected ? (model.connectionState == "delayed" ? "AO …" : "AO !") : errors > 0 ? "AO !\(errors)" : warnings > 0 ? "AO ?\(warnings)" : "AO \(idle)"
+        let tooltip = !model.connected ? model.message : errors > 0 ? "\(errors) 个异常或中断待查看" : "\(idle) 个会话等待输入"
+        if statusItem.button?.title != title { statusItem.button?.title = title }
+        if statusItem.button?.toolTip != tooltip { statusItem.button?.toolTip = tooltip }
+        if bubble.isVisible && !NSApp.isHidden {
+            if bubbleWasHidden { bubbleView.resumePresentation(); bubbleWasHidden = false }
+            bubbleView.update(model)
+        } else { bubbleWasHidden = true }
+        updateBubbleAnimationSchedule()
+    }
+
+    /// Draw ticks never poll, publish models, group sessions or infer state.
+    /// The view lowers its own requested FPS after expensive draws.
+    private func updateBubbleAnimationSchedule() {
+        let visible = bubble?.isVisible == true && !NSApp.isHidden
+        let fps = bubbleView?.recommendedFrameRate(visible: visible) ?? 0
+        let interval: TimeInterval = fps.isFinite && fps > 0 ? 1 / min(24, fps) : 0
+        guard abs(interval - bubbleAnimationInterval) > 0.001 ||
+                (interval > 0 && bubbleAnimationTimer == nil) else { return }
+        bubbleAnimationTimer?.invalidate()
+        bubbleAnimationTimer = nil
+        bubbleAnimationInterval = interval
+        guard interval > 0 else { return }
+        let timer = Timer(timeInterval: interval, repeats: true) { [weak self] _ in
+            guard let self else { return }
+            if self.bubble.isVisible && !NSApp.isHidden { self.bubbleView.presentationTick() }
+            self.updateBubbleAnimationSchedule()
+        }
+        timer.tolerance = interval * 0.15
+        bubbleAnimationTimer = timer
+        RunLoop.main.add(timer, forMode: .common)
+    }
+
+    @objc func showWaveGuide() {
+        WaveGuidePresenter.show()
     }
 
     @objc func showSettings() {
         if let window = settingsWindow, window.isVisible { window.makeKeyAndOrderFront(nil); NSApp.activate(ignoringOtherApps: true); return }
         let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 540, height: 640), styleMask: [.titled, .closable], backing: .buffered, defer: false)
         window.title = "Agent Orbit 设置"; window.isReleasedWhenClosed = false
+        window.delegate = self
         window.level = .floating
         window.contentView = NSHostingView(rootView: SettingsView(model: model) { [weak window] in window?.close() })
         window.center(); settingsWindow = window
@@ -1105,6 +1179,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
     @objc func showPanel() {
         minimizedByUser = false
         bubble.orderOut(nil)
+        bubbleWasHidden = true
+        updateBubbleAnimationSchedule()
         if panel.isMiniaturized { panel.deminiaturize(nil) }
         panel.orderFrontRegardless()
     }
@@ -1112,8 +1188,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         minimizedByUser = true
         panel.orderOut(nil)
         keepBubbleOnScreen()
+        if bubbleWasHidden { bubbleView.resumePresentation(); bubbleWasHidden = false }
         bubbleView.update(model)
         bubble.orderFrontRegardless()
+        updateBubbleAnimationSchedule()
         // A native titlebar minimize can reorder the panel after its action.
         DispatchQueue.main.async { [weak self] in
             guard let self = self, self.minimizedByUser else { return }
@@ -1134,12 +1212,31 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
     }
     @objc func quit() { NSApp.terminate(nil) }
     func applicationShouldHandleReopen(_ sender: NSApplication, hasVisibleWindows flag: Bool) -> Bool { showPanel(); return true }
-    func applicationWillTerminate(_ notification: Notification) { model.stop() }
-    func windowShouldClose(_ sender: NSWindow) -> Bool { minimizePanel(); return false }
+    func applicationWillTerminate(_ notification: Notification) {
+        bubbleAnimationTimer?.invalidate()
+        demoTimer?.invalidate()
+        model.stop()
+    }
+    func applicationDidHide(_ notification: Notification) {
+        bubbleWasHidden = true
+        updateBubbleAnimationSchedule()
+    }
+    func applicationDidUnhide(_ notification: Notification) { updateStatus() }
+    func windowShouldClose(_ sender: NSWindow) -> Bool {
+        guard sender === panel else { return true }
+        minimizePanel(); return false
+    }
+    func windowWillClose(_ notification: Notification) {
+        if let window = notification.object as? NSWindow, window === settingsWindow {
+            // The closed settings window must not keep an ObservedObject host
+            // rebuilding its forms on every monitoring update.
+            window.contentView = nil
+            settingsWindow = nil
+        }
+    }
     func windowDidMiniaturize(_ notification: Notification) {
-        minimizedByUser = true
-        panel.orderOut(nil)
-        bubble.orderFrontRegardless()
+        guard notification.object as? NSWindow === panel else { return }
+        minimizePanel()
     }
 }
 

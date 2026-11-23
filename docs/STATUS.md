@@ -68,12 +68,31 @@ The diagnostic log contains connection metadata, not conversation bodies.
 The floating ring's waveform shows recent output and resource changes only for
 sessions currently confirmed as running. Waiting, attention, error, unknown and
 offline nodes clear their activity history; resuming establishes a new baseline.
-Only working members contribute to a group's activity. Resource channels share
-one circular baseline and overlap in different skin colors rather than occupying
-concentric bands. Its style, palette, height and density change the presentation;
-they do not change completion detection or error alerts. A quiet waveform is not
-proof that a task has completed, and its height is not CPU usage, token throughput
-or reasoning efficiency. Turning it off leaves session monitoring active.
+Only working members contribute to a group's dynamic activity. In the main
+preview (5.2.7 / build 33), output, root process I/O, tool results and associated
+TCP traffic share one circular baseline and a 24-second timeline, clockwise from
+old to new. They overlap as a ribbon, segmented bars, pins/diamonds and a fine
+curve; RSS is a static arc. No concentric per-channel rings or random activity
+are added. The output signal combines observed page, run-record and confirmed
+background progress changes; it is not byte or token throughput. Each dynamic
+channel scales independently within each session, so heights do not compare
+efficiency across channels or sessions. Known zero activity draws no dynamic
+signal; unknown data is not converted to zero. A static hollow tool diamond may
+indicate an active tool without inventing completion events.
+
+Style, palette, height and density change the presentation; they do not change
+completion detection or error alerts. A quiet waveform is not proof that a task
+has completed, and its height is not CPU usage, token throughput or reasoning
+efficiency. Turning it off leaves session monitoring active. See the
+[waveform guide](WAVE_GUIDE.zh-CN.md) for shapes, units and platform coverage.
+
+Rendering adapts to visibility, recent real activity and measured drawing cost,
+independently of collector sampling and state delivery. In layered mode, brief
+monotonic height transitions (configured for up to 180 ms) only affect geometry backed by observed positive
+activity; they do not synthesize counters, traffic, tokens or tool events. Zero,
+unknown and nonrunning states clear without waiting for an animation. Hiding the
+ring stops its drawing, while monitoring and alerts continue. Returning to the
+ring establishes fresh visual baselines rather than replaying hidden increments.
 
 A thin two-color arc beside each name shows the accumulated observed idle/run
 ratio. Exact durations remain in the hover description and accessibility text;
@@ -83,8 +102,9 @@ Names, status text, arcs and markers share one resolved visual state and color.
 The default skin palette defines separate running, waiting, attention, error,
 unknown and offline roles. The classic palette uses orange, green, yellow, red,
 purple and gray respectively, with shades adapted to light and dark surfaces.
-Waveform presets may decorate running and waiting; attention, error, unknown
-and offline states always retain their semantic color.
+Legacy waveform palettes remain protected by the same semantic priority.
+Dynamic activity is drawn only for running nodes; attention, error, unknown and
+offline states always retain their semantic color.
 
 The existing `orbit_label_color` setting now selects the global status palette:
 `theme` means skin status colors and `status` means classic status colors.

@@ -23,11 +23,11 @@ Agent Orbit 的桌面颜色由 [Theme.swift](../desktop/Theme.swift) 统一定�
 
 | 类型 | 负责 | 不负责 |
 | --- | --- | --- |
-| `SkinDefinition` | 皮肤 ID、标题、深浅模式、12 个 RGB token、默认声浪样式和线宽 | 判断 Agent 是否结束 |
-| `PaletteResolver` | 不可变的皮肤与状态配色组合；返回 RGB token、会话色和声浪色，便于无窗口检查 | 保存设置、控制窗口 |
-| `ThemePalette` | UI 唯一入口；把 resolver 的 token 转成 AppKit `NSColor` 或 SwiftUI `Color`，提供连接与声浪接口 | 在视图中重新定义状态色 |
+| `SkinDefinition` | 皮肤 ID、标题、深浅模式、12 个界面／状态 RGB token、5 个资源通道 token、默认声浪样式和线宽 | 判断 Agent 是否结束 |
+| `PaletteResolver` | 不可变的皮肤与状态配色组合；返回界面 token、会话色、资源通道色与单层声浪色，便于无窗口检查 | 保存设置、控制窗口 |
+| `ThemePalette` | UI 唯一入口；把 resolver 的 token 转成 AppKit `NSColor` 或 SwiftUI `Color`，提供连接、资源与声浪接口 | 在视图中重新定义状态色 |
 
-`SkinDefinition` 构造时检查角色是否齐全、色值是否为 24 位 RGB。未知皮肤回退到 `neon`；`statusStyle` 除 `status` 外归一为 `theme`。
+`SkinDefinition` 构造时分别检查界面和资源角色是否齐全、色值是否为 24 位 RGB。未知皮肤回退到 `neon`；`statusStyle` 除 `status` 外归一为 `theme`。
 
 ## 12 个用途角色
 
@@ -106,9 +106,31 @@ Agent Orbit 的桌面颜色由 [Theme.swift](../desktop/Theme.swift) 统一定�
 | `unknown` | `#C4B4F5` | `#70549B` |
 | `offline` | `#93A1B6` | `#586A80` |
 
-## 声浪：活动装饰服从状态
+## 多层声浪：五种信号各有颜色角色
 
-声浪幅度来自实际输出或日志变化。颜色样式不修改采样、完成确认或异常检测，静默不能单独证明任务结束。
+**main 预览 · 5.2.7 / build 33。** 当前稳定包为 5.2.6。多层模式将输出与系统调用 I/O 拆为独立信号；应用内“声浪图说明…”和网页[声浪图解](WAVE_GUIDE.zh-CN.md)使用同一含义。
+
+`ResourceRole` 定义 `output/io/tools/network/memory`。颜色来自 `SkinDefinition.resourceTokens`，经 `PaletteResolver.resourceToken/resourceColor` 和 `ThemePalette.resourceColor` 读取，不能由 `OrbitView` 另写 RGB。资源通道描述观测来源，不选择会话状态；`statusStyle` 不会把所有通道染成运行色。
+
+| 资源角色 | 固定图形 | 霓虹深空 | 极光紫 | 石墨黑 | 晴空浅色 |
+| --- | --- | --- | --- | --- | --- |
+| `output` | 半透明填充光带 | `#63D9FF` | `#86D6FF` | `#8FCFE5` | `#136FBA` |
+| `io` | 分段柱 | `#FF91B5` | `#FF9DA6` | `#E8A0AB` | `#B44860` |
+| `tools` | 完成针 / 实心菱形；活动工具静态空心菱形 | `#FFD187` | `#F3C57D` | `#DBC084` | `#946000` |
+| `network` | 细曲线 / 峰帽 | `#B99CFF` | `#CE9EFF` | `#C9AEEC` | `#7951C2` |
+| `memory` | 静态细弧 | `#7CE3C0` | `#84DBC7` | `#9ACDBA` | `#24775E` |
+
+资源色的可选 `fraction` 只向正文色混合少量亮度，不能改变通道映射。四个动态通道叠在同一条圆周基线上，共用最近 24 秒时间桶，顺时针从旧到新；RSS 不进入动态时间轴，主机总内存可读时按占比显示，否则用短虚线标记，不臆测比例。每个会话、每个通道独立使用窗口标尺，结合近期峰值与固定单位参考缩放；短过渡结束后同值同高。通道之间的高度没有占比意义，也不用于跨会话比较效率。
+
+只有运行节点显示动态活动。等待、待处理、异常、待核实和离线立即清除历史，恢复运行先建立基线；已知零不画动态层，未知不填零，不添加随机波动。RSS 与未返回工具仅提供静态上下文，不证明任务仍在工作。工具完成包含失败结果，输出活动也不是 Token 或字节吞吐。各数据源、单位和共享范围见 [指标口径](METRICS.md#资源声浪)。
+
+多层模式开启时，“样式”和“配色”采用固定通道图形与资源色；高度、密度和低活动灵敏度继续生效。关闭多层模式后恢复以下原有输出样式与渐变。设置页图例使用当前草稿的 resolver，换肤时不提前修改主窗口。
+
+几何平滑与颜色解析分开：`presentedHeight` 仅对已观测正值进行最长 180 毫秒的单调过渡，零值或不可用信号直接清除；减少动态效果时不插值。独立的展示时钟按可见性、活动和实际绘制耗时选择频率，只请求重绘，不生成采集样本或重新累计用量。状态变化仍从模型即时进入视图，不能为了动画平滑而保留等待或异常前的活动。
+
+## 单层输出声浪：保留原有样式
+
+本节仅适用于关闭“多层资源声浪”的模式。声浪幅度来自实际页面、运行记录或已确认后台进展的活动变化。颜色样式不修改采样、完成确认或异常检测，静默不能单独证明任务结束。
 
 `PaletteResolver.waveColor(state:palette:fraction:)` 先处理语义优先级：`attention/error/unknown/offline` 始终返回当前全局状态色，忽略装饰预设。只有 `running/waiting` 可以使用以下渐变：
 
@@ -148,7 +170,8 @@ Agent Orbit 的桌面颜色由 [Theme.swift](../desktop/Theme.swift) 统一定�
 | 连接点及其阴影 | `connection(...).role`，点与光晕同色 |
 | 会话环名字、圆弧和活动标记 | 节点的 `session(visualState)` |
 | 悬浮球总览与中心轨迹 | 当前聚合状态的语义色；文字标签使用 `muted` |
-| 外围声浪 | `waveColor(...)`，由统一入口保护异常与可用性语义 |
+| 多层资源声浪、图例与说明窗口 | `resourceColor(.output/.io/.tools/.network/.memory)`；图形与颜色同时表示通道，显示由运行状态控制 |
+| 原有单层输出声浪 | `waveColor(...)`，由统一入口保护异常与可用性语义 |
 | 关注列表编辑器 | `ns(.text)` 与 `ns(.accent)` 输入光标 |
 
 组件可以调整 alpha、阴影半径、几何和线宽；不能自行增加另一套 RGB、`Neon` 颜色别名或状态到颜色的判断链。
@@ -172,6 +195,7 @@ let labelColor = ThemePalette.ns(.muted)
 let waveColor = ThemePalette.waveColor(state: visual,
                                        palette: settings.wavePalette,
                                        fraction: 0.5)
+let ioColor = ThemePalette.resourceColor(.io)  // 多层模式与图例共用
 ```
 
 不依赖窗口的色值检查使用不可变 resolver：
@@ -197,7 +221,7 @@ let ocean = SkinDefinition(id: "ocean", title: "海潮", light: false,
 let preview = PaletteResolver(skin: ocean, statusStyle: "theme")
 ```
 
-上例是新增定义的写法；将实际定义加入 `SkinDefinition.all` 后，设置中的 ID/标题列表自动派生；`configuration.py` 的主题 ID 白名单也需加入同一 ID。检查六种状态彼此可分辨、正文和状态文字可读，再运行主题检查与应用构建。新增皮肤无需修改 `PanelView` 或 `OrbitView` 的颜色分支。
+上例是新增定义的写法；正式皮肤还应通过 `resourceTokens` 显式定义五种资源角色，确保光带、分段柱、工具标志、网络曲线和 RSS 弧可分辨。将实际定义加入 `SkinDefinition.all` 后，设置中的 ID/标题列表自动派生；`configuration.py` 的主题 ID 白名单也需加入同一 ID。检查六种状态彼此可分辨、正文和状态文字可读，再运行主题检查与应用构建。新增皮肤无需修改 `PanelView` 或 `OrbitView` 的颜色分支。
 
 ## 设置兼容
 
@@ -215,7 +239,7 @@ JSON 仍使用旧键，已有配置无需迁移字段名：
 | `orbit_label_color: "theme"` | 皮肤状态色 | 全局使用所选皮肤的六状态 token |
 | `orbit_label_color: "status"` | 经典状态色 | 全局使用深色或浅色经典六状态 token |
 
-Swift 设置属性继续叫 `orbitLabelColor`，传入 `ThemePalette.configure` 时对应 `statusStyle`。它已不是“只修改会话名”的开关，`theme` 也不再把所有名字强制染成 accent。声浪的 `wave_palette` 是独立装饰选项，不能覆盖高优先级语义状态。
+Swift 设置属性继续叫 `orbitLabelColor`，传入 `ThemePalette.configure` 时对应 `statusStyle`。它已不是“只修改会话名”的开关，`theme` 也不再把所有名字强制染成 accent。`wave_resources: true` 开启多层通道；`wave_palette` 是关闭多层后单层输出的独立装饰选项，不能覆盖高优先级语义状态，也不改写资源通道色。
 
 ## 检查
 
