@@ -98,6 +98,7 @@ final class BubbleView: NSView {
     private var visualNow: TimeInterval { observationTime ?? ProcessInfo.processInfo.systemUptime }
     private var waveTransitions: [GeometryKey: GeometryTransition] = [:]
     private var drawCostEMA: TimeInterval?
+    private let textLayouts = OrbitTextLayoutCache()
     struct PresentationCPUReading {
         var time: TimeInterval
         var cpuSeconds: TimeInterval
@@ -849,11 +850,10 @@ final class BubbleView: NSView {
 
     private func configureRings() {
         func requiredRadius(_ indices: [Int], _ size: CGFloat) -> CGFloat {
-            let font = NSFont.monospacedSystemFont(ofSize: size, weight: .medium)
             let perRadian = CGFloat(indices.count) / (.pi * 2)
             return indices.map { index -> CGFloat in
                 let name = label(nodes[index].name)
-                let titleWidth = (name as NSString).size(withAttributes: [.font: font]).width + CGFloat(name.count) * 0.25
+                let titleWidth = textLayouts.width(name, fontSize: size, mode: .arc)
                 return (titleWidth + 12) * perRadian
             }.max() ?? 0
         }
@@ -1644,9 +1644,8 @@ final class BubbleView: NSView {
                 amounts.append(UsageMetrics.amount(value))
                 amounts.append(String(format: "%.2e", Double(value)).replacingOccurrences(of: "e+", with: "e"))
             }
-            let font = NSFont.monospacedSystemFont(ofSize: size, weight: .medium)
             return amounts.map { prefix + $0 + suffix }.first {
-                ($0 as NSString).size(withAttributes: [.font: font]).width <= tokenWidth
+                textLayouts.width($0, fontSize: size) <= tokenWidth
             } ?? prefix + (amounts.last ?? "—") + suffix
         }
         let liveTokens = usage?.liveWindowTokens(connected: connected) ?? "—"
@@ -1697,36 +1696,20 @@ final class BubbleView: NSView {
     }
 
     private func drawArcText(_ text: String, center: NSPoint, radius: CGFloat, angle: CGFloat, size: CGFloat, color: NSColor) {
-        let font = NSFont.monospacedSystemFont(ofSize: size, weight: .medium)
-        let attributes: [NSAttributedString.Key: Any] = [.font: font, .foregroundColor: color]
-        let characters = text.map { String($0) as NSString }
-        let widths = characters.map { $0.size(withAttributes: attributes).width + 0.25 }
-        let total = widths.reduce(0, +)
-        let bottom = sin(angle.truncatingRemainder(dividingBy: .pi * 2)) < -0.1
-        var offset = -total / 2
-        for (index, character) in characters.enumerated() {
-            let width = widths[index]
-            let delta = (offset + width / 2) / radius
-            let theta = angle + (bottom ? delta : -delta)
-            let position = point(center, radius, theta)
-            NSGraphicsContext.saveGraphicsState()
-            let transform = NSAffineTransform()
-            transform.translateX(by: position.x, yBy: position.y)
-            transform.rotate(byDegrees: theta * 180 / .pi + (bottom ? 90 : -90))
-            transform.concat()
-            character.draw(at: NSPoint(x: -width / 2, y: -font.ascender / 2), withAttributes: attributes)
-            NSGraphicsContext.restoreGraphicsState()
-            offset += width
-        }
+        guard let context = NSGraphicsContext.current?.cgContext else { return }
+        textLayouts.drawArc(text, context: context, center: center, radius: radius,
+                            angle: angle, fontSize: size, color: color)
     }
 
     private func drawText(_ text: String, rect: NSRect, size: CGFloat, color: NSColor) {
-        let style = NSMutableParagraphStyle(); style.alignment = .center; style.lineBreakMode = .byTruncatingMiddle
-        (text as NSString).draw(in: rect, withAttributes: [.font: NSFont.monospacedSystemFont(ofSize: size, weight: .medium), .foregroundColor: color, .paragraphStyle: style])
+        guard let context = NSGraphicsContext.current?.cgContext else { return }
+        textLayouts.draw(text, context: context, rect: rect, fontSize: size, color: color)
     }
 
     private func drawFittedText(_ text: String, rect: NSRect, size: CGFloat, minimumSize: CGFloat, color: NSColor) {
-        let width = (text as NSString).size(withAttributes: [.font: NSFont.monospacedSystemFont(ofSize: size, weight: .medium)]).width
+        guard OrbitTextLayoutCache.validRect(rect), OrbitTextLayoutCache.validFontSize(size),
+              OrbitTextLayoutCache.validFontSize(minimumSize) else { return }
+        let width = textLayouts.width(text, fontSize: size)
         let fittedSize = width > rect.width ? max(minimumSize, size * rect.width / width) : size
         drawText(text, rect: rect, size: fittedSize, color: color)
     }

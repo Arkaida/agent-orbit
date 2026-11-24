@@ -712,6 +712,59 @@ private final class OrbitWaveTestSuite {
               recentPeak: true, drawCost: cost) <= 2,
               "Process feedback cannot override hidden, mini or reduced-motion presentation caps")
     }
+
+    func actualBubbleTextDrawing() throws {
+        let names = ["目标-会话", "e\u{301}cole-agent", "👩🏽‍💻-🛰️", "مرحبا-agent", "עברית-agent", "long-counter-session-1234567890", "control-\u{01}-test"]
+        let states = ["running", "idle", "error", "paused", "unknown", "running", "idle"]
+        let rows = try names.enumerated().map { try pane($0.element, state: states[$0.offset]) }
+        let (model, view) = fixture(rows, now: 1000)
+        model.metrics = try decode(["total_tokens": Int.max, "window_tokens": 1234567890,
+                                   "usage_covered": rows.count, "usage_sessions": rows.count,
+                                   "live_usage_covered": rows.count, "window_seconds": 30], as: UsageMetrics.self)
+        advance(&model.rows[0], io: 2048, network: 8192, tools: 2, output: 128)
+        view.update(model, now: 1001)
+
+        func draw(_ view: BubbleView) -> [UInt8] {
+            let width = max(1, Int(ceil(view.bounds.width))), height = max(1, Int(ceil(view.bounds.height)))
+            let context = CGContext(data: nil, width: width, height: height, bitsPerComponent: 8,
+                                    bytesPerRow: width * 4, space: CGColorSpace(name: CGColorSpace.sRGB)!,
+                                    bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue | CGBitmapInfo.byteOrder32Big.rawValue)!
+            let previous = NSGraphicsContext.current
+            NSGraphicsContext.current = NSGraphicsContext(cgContext: context, flipped: false)
+            defer { NSGraphicsContext.current = previous }
+            view.draw(view.bounds)
+            return Array(UnsafeBufferPointer(start: context.data!.assumingMemoryBound(to: UInt8.self), count: width * height * 4))
+        }
+
+        var priorPixels: [UInt8]?
+        for skin in SkinDefinition.all {
+            ThemePalette.configure(theme: skin.id, statusStyle: "theme")
+            model.settings.theme = skin.id
+            view.update(model, now: 1001)
+            let pixels = draw(view)
+            check(pixels.contains { $0 != 0 }, "The real Bubble must render Unicode labels and hub counters for skin \(skin.id)")
+            if let old = priorPixels { check(old != pixels, "Changing skins must affect the actual Bubble's rendered pixels") }
+            priorPixels = pixels
+            guard let cache = field(view, "textLayouts") as? OrbitTextLayoutCache else {
+                check(false, "The actual Bubble must own the safe font geometry cache"); continue
+            }
+            let creations = cache.creationCount
+            let repeated = draw(view)
+            check(repeated == pixels, "Fixed-clock Bubble drawing must remain deterministic for skin \(skin.id)")
+            check(cache.creationCount == creations && cache.count <= cache.capacity,
+                  "A repeated full Bubble draw must reuse bounded font geometry")
+        }
+
+        preferences.set(true, forKey: "orbitMiniMode")
+        defer { preferences.set(false, forKey: "orbitMiniMode") }
+        let mini = BubbleView(frame: NSRect(x: 0, y: 0, width: 72, height: 72), preferences: preferences)
+        mini.update(model, now: 1001)
+        check(draw(mini).contains { $0 != 0 }, "The actual mini Bubble must also draw through the safe text engine")
+        model.connected = false; model.connectionState = "reconnecting"
+        view.update(model, now: 1002)
+        check(draw(view).contains { $0 != 0 }, "Disconnected text and placeholder counters must remain drawable")
+        ThemePalette.configure(theme: "neon", statusStyle: "theme")
+    }
 }
 
 @main @MainActor
@@ -737,6 +790,7 @@ struct OrbitWaveTests {
         try suite.adaptivePresentationAndMonotonicGeometry()
         try suite.sameBucketEpochGeometryReset()
         suite.processCPUCostFeedback()
+        try suite.actualBubbleTextDrawing()
         if !suite.failures.isEmpty {
             for failure in suite.failures { fputs("FAIL: " + failure + "\n", stderr) }
             suite.cleanUp()

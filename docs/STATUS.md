@@ -69,7 +69,7 @@ The floating ring's waveform shows recent output and resource changes only for
 sessions currently confirmed as running. Waiting, attention, error, unknown and
 offline nodes clear their activity history; resuming establishes a new baseline.
 Only working members contribute to a group's dynamic activity. In the main
-preview (5.2.7 / build 33), output, root process I/O, tool results and associated
+preview (5.2.8 / build 34), output, root process I/O, tool results and associated
 TCP traffic share one circular baseline and a 24-second timeline, clockwise from
 old to new. They overlap as a ribbon, segmented bars, pins/diamonds and a fine
 curve; RSS is a static arc. No concentric per-channel rings or random activity

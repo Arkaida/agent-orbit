@@ -24,7 +24,7 @@ Agent Orbit 将你已有的 **CLI Agent 会话**放在桌面边缘：运行、�
 
 A standalone native macOS monitor for **local Codex sessions and Linux SSH/tmux Codex CLI / Claude Code CLI sessions**. See when they need input and return to your work. No Codex plugin, external Python or Node.js is required to run the app.
 
-> **版本提示** · 稳定下载为 **5.2.6**。上图与下方「四路活动声浪」展示 **main 预览版 5.2.7 / build 33**，尚未发布新安装包；体验新声浪请从 main 构建。5.2.6 的下载包仍使用上一版资源声浪。[更新记录](docs/RELEASES.md)
+> **版本提示** · 稳定下载为 **5.2.6**。上图与下方「四路活动声浪」展示 **main 预览版 5.2.8 / build 34**，尚未发布新安装包；体验新声浪请从 main 构建。5.2.6 的下载包仍使用上一版资源声浪。[更新记录](docs/RELEASES.md)
 
 ## 从“还在跑吗”到“该我继续了”
 

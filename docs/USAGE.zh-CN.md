@@ -2,7 +2,7 @@
 
 A small native macOS monitor for local Codex CLI and remote Codex CLI / Claude Code CLI sessions.
 
-**稳定下载：[5.2.6](https://github.com/Arkaida/agent-orbit/releases/tag/v5.2.6)。main 预览：5.2.7 / build 33，新增四路活动声浪与应用内图解，尚未发布新安装包。**
+**稳定下载：[5.2.6](https://github.com/Arkaida/agent-orbit/releases/tag/v5.2.6)。main 预览：5.2.8 / build 34，新增四路活动声浪与应用内图解，尚未发布新安装包。**
 
 用紧凑的置顶窗口或桌面会话环，查看 Agent 何时真正等待下一次输入、何时需要处理异常。绿色表示等待，黄色表示待处理，红色表示异常；运行色随皮肤变化，也可选择经典配色中的橙色。待核实与离线各有独立状态色。保留终端与在线 Agent 数量只提供上下文，不会把已结束的主对话误判成运行中。
 

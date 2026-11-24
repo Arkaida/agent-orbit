@@ -108,7 +108,7 @@ Agent Orbit 的桌面颜色由 [Theme.swift](../desktop/Theme.swift) 统一定�
 
 ## 多层声浪：五种信号各有颜色角色
 
-**main 预览 · 5.2.7 / build 33。** 当前稳定包为 5.2.6。多层模式将输出与系统调用 I/O 拆为独立信号；应用内“声浪图说明…”和网页[声浪图解](WAVE_GUIDE.zh-CN.md)使用同一含义。
+**main 预览 · 5.2.8 / build 34。** 当前稳定包为 5.2.6。多层模式将输出与系统调用 I/O 拆为独立信号；应用内“声浪图说明…”和网页[声浪图解](WAVE_GUIDE.zh-CN.md)使用同一含义。
 
 `ResourceRole` 定义 `output/io/tools/network/memory`。颜色来自 `SkinDefinition.resourceTokens`，经 `PaletteResolver.resourceToken/resourceColor` 和 `ThemePalette.resourceColor` 读取，不能由 `OrbitView` 另写 RGB。资源通道描述观测来源，不选择会话状态；`statusStyle` 不会把所有通道染成运行色。
 

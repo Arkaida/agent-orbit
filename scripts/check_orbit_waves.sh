@@ -15,13 +15,16 @@ if ! awk '/^final class PanelModel: / { found = 1; exit } { print } END { if (!f
     printf 'Could not locate the desktop model boundary in main.swift.\n' >&2
     exit 1
 fi
+/usr/bin/xcrun clang -fobjc-arc -fobjc-arc-exceptions -target "$orbit_test_arch-apple-macos13.0" \
+    -c "$orbit_test_root/desktop/OrbitTextRenderer.m" -o "$orbit_test_dir/OrbitTextRenderer.o"
 set -- -parse-as-library -target "$orbit_test_arch-apple-macos13.0" \
-    -module-cache-path "$orbit_test_dir/module-cache" -framework AppKit -framework SwiftUI
+    -module-cache-path "$orbit_test_dir/module-cache" -framework AppKit -framework SwiftUI -framework CoreText \
+    -import-objc-header "$orbit_test_root/desktop/OrbitTextRenderer.h"
 if test -f /Library/Developer/CommandLineTools/usr/include/swift/module.modulemap && \
    test -f /Library/Developer/CommandLineTools/usr/include/swift/bridging.modulemap; then
     set -- "$@" -vfsoverlay "$orbit_test_root/desktop/module-overlay.json"
 fi
-/usr/bin/swiftc "$@" "$orbit_test_root/desktop/Theme.swift" \
+/usr/bin/swiftc "$@" "$orbit_test_dir/OrbitTextRenderer.o" "$orbit_test_root/desktop/OrbitTextLayout.swift" "$orbit_test_root/desktop/Theme.swift" \
     "$orbit_test_root/desktop/AppSettings.swift" "$orbit_test_dir/SessionModels.swift" \
     "$orbit_test_root/desktop/OrbitView.swift" "$orbit_test_root/desktop/tests/OrbitWaveTests.swift" \
     -o "$orbit_test_dir/orbit-wave-tests"

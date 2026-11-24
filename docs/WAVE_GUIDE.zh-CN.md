@@ -1,6 +1,6 @@
 # 看懂会话环的声浪
 
-**main 预览 · 5.2.7 / build 33。** 本页说明新一版四路活动声浪。当前稳定安装包仍为 [5.2.6](https://github.com/Arkaida/agent-orbit/releases/tag/v5.2.6)，不包含这次升级；可从 main 构建体验。
+**main 预览 · 5.2.8 / build 34。** 本页说明新一版四路活动声浪。当前稳定安装包仍为 [5.2.6](https://github.com/Arkaida/agent-orbit/releases/tag/v5.2.6)，不包含这次升级；可从 main 构建体验。
 
 ![四路活动声浪图例：输出、I/O、工具和网络共用一条圆周时间轴，RSS 为静态细弧](media/orbit-signals-guide.svg)
 
