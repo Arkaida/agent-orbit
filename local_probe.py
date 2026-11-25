@@ -13,6 +13,7 @@ import time
 
 from remote_probe import EMPTY_ISSUE, ResultLogWatcher, UsageLogWatcher, detect_failure, issue
 from resource_probe import AsyncProcessResources
+from process_snapshot import ProcessSnapshot
 
 LIFECYCLE = frozenset(('task_started', 'turn_started', 'task_complete', 'turn_complete',
                        'turn_aborted', 'turn_failed', 'error', 'stream_error'))
@@ -59,7 +60,9 @@ class LocalCollector:
         self.usage = UsageLogWatcher()
         self.results = ResultLogWatcher()
         self.resources = AsyncProcessResources()
-        self.processes = {}
+        self.processes = ProcessSnapshot()
+        self.process_owners = {}
+        self.dialogue_generation = 0
         self.next_discovery = 0
 
     def discover(self):
@@ -67,16 +70,18 @@ class LocalCollector:
         if result.returncode:
             raise RuntimeError('无法读取本机进程，请检查系统权限')
         pids = []
-        self.processes = {}
+        table = {}
+        self.process_owners = {}
         for line in result.stdout.splitlines():
             parts = line.split(None, 3)
             if len(parts) == 4:
                 try:
-                    self.processes[int(parts[0])] = (int(parts[1]), parts[2], parts[3])
+                    table[int(parts[0])] = (int(parts[1]), parts[2], parts[3])
                 except ValueError:
                     continue
             if len(parts) == 4 and os.path.basename(parts[3]) in ('codex', 'codex-app-server') and 'Z' not in parts[2]:
                 pids.append(parts[0])
+        self.processes = ProcessSnapshot(table)
         if not pids:
             return []
         result = self.runner(['lsof', '-n', '-P', '-p', ','.join(pids), '-Fpn'], capture_output=True, text=True, timeout=4)
@@ -103,10 +108,14 @@ class LocalCollector:
                         children[sid] = (parent, path)
                     continue  # Child/guardian sessions never become root cards.
                 if isinstance(sid, str) and isinstance(payload.get('source'), str) and payload['source'].strip() and owner:
-                    found[sid] = dict(path=path, pid=owner, metadata=payload)
+                    existing = found.get(sid)
+                    pids = (existing.get('pids', set()) if existing else set()) | {owner}
+                    found[sid] = dict(path=path, pid=owner if len(pids) == 1 else None, pids=pids, metadata=payload)
             except (OSError, ValueError, TypeError):
                 continue
         for sid, root in found.items():
+            for pid in root['pids']:
+                self.process_owners.setdefault(pid, set()).add(sid)
             owned, root['children'] = {sid}, []
             for _ in children:
                 added = [(cid, path) for cid, (parent, path) in children.items() if parent in owned and cid not in owned]
@@ -132,10 +141,15 @@ class LocalCollector:
         identity = (info.st_dev, info.st_ino)
         saved = self.files.get(str(path))
         if saved is None or saved['identity'] != identity or info.st_size < saved['offset']:
-            saved = dict(identity=identity, offset=0, buffer=b'', last='', preview=[], failure=dict(EMPTY_ISSUE))
+            self.dialogue_generation += 1
+            saved = dict(identity=identity, offset=0, buffer=b'', last='', preview=[], failure=dict(EMPTY_ISSUE),
+                         dialogue_text='', dialogue_trimmed=False,
+                         dialogue_last_id=None, dialogue_last_text='', dialogue_seen_ids=[],
+                         dialogue_identity='assistant-log:{}:{}:{}'.format(identity[0], identity[1], self.dialogue_generation))
             self.files[str(path)] = saved
             # Establish current state from a bounded tail, without replaying alerts.
             saved['offset'] = max(0, info.st_size - 2097152)
+            saved['dialogue_trimmed'] = saved['offset'] > 0
         with path.open('rb') as log:
             log.seek(saved['offset'])
             if saved['offset'] and not saved.get('initialized'):
@@ -155,12 +169,35 @@ class LocalCollector:
                 if item.get('type') == 'event_msg':
                     if kind in LIFECYCLE:
                         apply_lifecycle(saved, payload)
+                    if kind in ('task_started', 'turn_started'):
+                        saved.update(dialogue_text='', dialogue_trimmed=False,
+                                     dialogue_last_id=None, dialogue_last_text='', dialogue_seen_ids=[])
                 if item.get('type') == 'response_item' and kind == 'message' and payload.get('role') == 'assistant':
                     text = '\n'.join(x.get('text', '') for x in payload.get('content', []) if isinstance(x, dict) and x.get('type') in ('output_text', 'text'))
                     if text.strip():
                         saved['preview'] = text.strip().splitlines()[-3:]
+                        message_id = payload.get('id') or item.get('id')
+                        previous = saved['dialogue_last_text']
+                        same_message = (message_id is not None and message_id == saved['dialogue_last_id'])
+                        # Some log producers repeat a complete message or emit
+                        # progressively longer complete bodies without an ID.
+                        same_message = same_message or (message_id is None and previous and text.startswith(previous))
+                        duplicate = message_id is not None and message_id in saved['dialogue_seen_ids'] and not same_message
+                        if not duplicate:
+                            body = saved['dialogue_text']
+                            if same_message:
+                                body = body[:-len(previous)] if len(previous) <= len(body) else ''
+                            elif body:
+                                body += '\n'
+                            body += text
+                            saved.update(dialogue_text=body[-16384:],
+                                         dialogue_trimmed=saved['dialogue_trimmed'] or len(body) > 16384,
+                                         dialogue_last_id=message_id, dialogue_last_text=text[-16384:])
+                            if message_id is not None and message_id not in saved['dialogue_seen_ids']:
+                                saved['dialogue_seen_ids'] = (saved['dialogue_seen_ids'] + [message_id])[-64:]
             except (ValueError, TypeError, AttributeError):
                 continue
+        saved['dialogue_caught_up'] = saved['offset'] >= info.st_size and not saved['buffer']
         return saved
 
     def snapshot(self, selected=()):
@@ -195,22 +232,26 @@ class LocalCollector:
                              background_agents_observable=all(child_states) if child_states else True,
                              cwd=session['metadata'].get('cwd', ''), window='本机', pane=sid[:8],
                              preview=state['preview'], activity='\n'.join(state['preview']), working='', screen='',
+                             dialogue_text=state['dialogue_text'], dialogue_source='assistant_log',
+                             dialogue_identity=state['dialogue_identity'], dialogue_available=True,
+                             dialogue_complete=state['dialogue_caught_up'] and not state['dialogue_trimmed'],
+                             dialogue_sample_id=str(time.monotonic_ns()),
                              fingerprint=hashlib.sha256((last + '\n'.join(state['preview'])).encode()).hexdigest(),
                              lifecycle_cursor=dict(path=str(session['path']), device=state['identity'][0], inode=state['identity'][1], offset=state['offset']),
                              telemetry=self.usage.sample(session['path'], 'codex'),
                              **self.results.sample(session['path'], 'codex'),
                              **state['failure']))
         samples = self.resources.sample_all([row['process_id'] for row in rows], self.processes)
-        owners = {}
-        for sid, session in self.discovery:
-            owners.setdefault(session['pid'], set()).add(sid)
         for row in rows:
             value = samples.get(row['process_id'])
             if value is not None:
                 value = dict(value)
-                shared = len(owners.get(row['process_id'], ()))
+                shared = len(self.process_owners.get(row['process_id'], ()))
                 process_name = os.path.basename(self.processes.get(row['process_id'], (0, '', ''))[2])
-                if shared > 1 or process_name == 'codex-app-server':
+                shared_host = shared > 1 or process_name == 'codex-app-server'
+                value.update(attribution='shared' if shared_host else 'exclusive' if shared else 'unattributed',
+                             attribution_source='open_rollout_fd')
+                if shared_host:
                     value.update(scope='shared_process', shared_sessions=shared)
             row['resources'] = value
         return dict(panes=rows, sampled_at=time.time(), collection_ms=round((time.monotonic() - started) * 1000))

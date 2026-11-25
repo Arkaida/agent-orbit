@@ -10,7 +10,7 @@ import unittest
 from unittest.mock import Mock, patch
 
 from configuration import defaults
-from desktop_bridge import FrameEmissionGate, run
+from desktop_bridge import FrameEmissionGate, run, source_payload
 from manual_tracker import ManualRunningTracker
 
 
@@ -44,6 +44,24 @@ class EmissionGateTests(unittest.TestCase):
         self.assertTrue(gate.should_emit(100))
         self.assertTrue(gate.should_emit(0))
         self.assertFalse(gate.should_emit(.5))
+
+
+class DialogueDeliveryTests(unittest.TestCase):
+    def test_desktop_receives_metrics_without_duplicate_body_and_offline_is_unavailable(self):
+        output = dict(epoch='synthetic-output', sample_id=2, total_chars=12, available=True,
+                      complete=False, sample_age_seconds=0, source='assistant_screen')
+        raw = dict(session='alpha', pane_id='%1', state='running',
+                   dialogue_text='private body ' * 1000, dialogue_source='assistant_screen',
+                   dialogue_identity='raw-identity', dialogue_available=True,
+                   dialogue_complete=False, dialogue_sample_id='raw-sample', dialogue_output=output)
+        state = SimpleNamespace(rows=[raw], events=[], notification_events=[], error_events=[])
+        live = source_payload('remote', state, dict(connected=True), [])['rows'][0]
+        self.assertEqual(live['dialogue_output'], output)
+        self.assertFalse(any(key.startswith('dialogue_') and key != 'dialogue_output' for key in live))
+        self.assertNotIn('private body', json.dumps(live))
+        offline = source_payload('remote', state, dict(connected=False), [])['rows'][0]
+        self.assertIsNone(offline['dialogue_output'])
+        self.assertEqual(raw['dialogue_output'], output)
 
 
 class BridgeEmissionTests(unittest.TestCase):

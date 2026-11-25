@@ -143,7 +143,7 @@ class FeedState:
         raw = self.model.visible(selected)
         if transform is not None:
             raw = transform(raw)
-        observed = self.activity.update(raw, now_mono, epoch)
+        observed = self.activity.update(raw, now_mono, epoch, max_gap_seconds=max_gap_seconds)
         self.rows, completed = self.completions.update(observed, now_mono, now_wall, epoch=epoch)
         self.events = (self.events + completed)[-100:]
         alerts = self.attention.update(observed, now_wall, epoch=epoch, now_mono=now_mono)
@@ -192,12 +192,15 @@ def source_payload(name, state, health, selected):
         if selected and row['session'] not in selected and row.get('thread_id') not in selected:
             continue
         compact = {key: value for key, value in row.items()
-                   if key not in ('screen', 'fingerprint', 'activity', 'lifecycle_events')}
+                   if key not in ('screen', 'fingerprint', 'activity', 'lifecycle_events',
+                                  'dialogue_text', 'dialogue_source', 'dialogue_identity',
+                                  'dialogue_available', 'dialogue_complete', 'dialogue_sample_id')}
         compact.update(pane_id=pane_id(row['pane_id']), source=name,
                        source_label='远端' if name == 'remote' else '本机', available=health['connected'],
                        group_id=name + ':' + row['session'] if name == 'remote' else row.get('group_id', row['pane_id']))
         if not health['connected'] or row.get('state') == 'missing':
             compact['resources'] = None
+            compact['dialogue_output'] = None
         rows.append(compact)
     def events(values):
         return [dict(event, pane_id=pane_id(event['pane_id']), source=name) for event in values]

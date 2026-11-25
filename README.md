@@ -10,11 +10,11 @@
 
 独立 macOS 应用 · 本机 Codex CLI · SSH 远端 Codex CLI / Claude Code CLI
 
-[![macOS 13+](https://img.shields.io/badge/macOS-13%2B-101a2c?logo=apple&logoColor=white)](https://github.com/Arkaida/agent-orbit/releases/tag/v5.2.6)
+[![macOS 13+](https://img.shields.io/badge/macOS-13%2B-101a2c?logo=apple&logoColor=white)](https://github.com/Arkaida/agent-orbit/releases/tag/v5.3.3)
 [![MIT](https://img.shields.io/badge/license-MIT-38d9ff)](LICENSE)
 [![Checks](https://github.com/Arkaida/agent-orbit/actions/workflows/ci.yml/badge.svg)](https://github.com/Arkaida/agent-orbit/actions/workflows/ci.yml)
 
-[**下载稳定版 5.2.6**](https://github.com/Arkaida/agent-orbit/releases/tag/v5.2.6) · [**首次配置指南**](https://github.com/Arkaida/agent-orbit/blob/main/docs/GETTING_STARTED.zh-CN.md) · [声浪图解](docs/WAVE_GUIDE.zh-CN.md)
+[**下载 5.3.3**](https://github.com/Arkaida/agent-orbit/releases/tag/v5.3.3) · [**首次配置指南**](https://github.com/Arkaida/agent-orbit/blob/main/docs/GETTING_STARTED.zh-CN.md) · [声浪图解](docs/WAVE_GUIDE.zh-CN.md)
 
 <img src="docs/media/orbit-signals-hero.png" width="100%" alt="Agent Orbit main preview: a compact CLI monitor and floating session ring with four overlapping activity signals; fictional demo data">
 
@@ -24,7 +24,7 @@ Agent Orbit 将你已有的 **CLI Agent 会话**放在桌面边缘：运行、�
 
 A standalone native macOS monitor for **local Codex sessions and Linux SSH/tmux Codex CLI / Claude Code CLI sessions**. See when they need input and return to your work. No Codex plugin, external Python or Node.js is required to run the app.
 
-> **版本提示** · 稳定下载为 **5.2.6**。上图与下方「四路活动声浪」展示 **main 预览版 5.2.8 / build 34**，尚未发布新安装包；体验新声浪请从 main 构建。5.2.6 的下载包仍使用上一版资源声浪。[更新记录](docs/RELEASES.md)
+> **5.3.3** · 五路真实活动、六种统一声浪皮肤，以及 Claude 后台实验与 Codex 长任务识别。上图为早期版本的虚构数据界面，当前五层声浪见下方图解。[更新记录](docs/RELEASES.md)
 
 ## 从“还在跑吗”到“该我继续了”
 
@@ -35,23 +35,25 @@ A standalone native macOS monitor for **local Codex sessions and Linux SSH/tmux 
 
 **应用自己运行。** 双击 `.app` 即可启动。它读取你已有的会话，不启动或接管 Agent，也不向 CLI 发送输入。
 
-## 四路活动声浪，一条时间轴
+## 五路活动声浪，一条时间轴
 
-**main 预览** · 输出光带、I/O 分段柱、工具针与菱形、网络细曲线，共用同一条圆周基线。最近 **24 秒**从旧到新顺时针展开；RSS 内存只保留一段静态细弧。层次来自真实数据和不同图形，不靠随机跳动。
+对话输出、CPU、磁盘、GPU、网络共用同一条圆周基线和同一种声浪皮肤，以五种颜色区分来源。最近 **24 秒**顺时针展开；纯文字输出时，即使硬件活动很低，对话输出层仍会变化。
 
-<img src="docs/media/orbit-signals-guide.svg" width="100%" alt="Signal legend: cyan output ribbon, rose I/O bars, amber tool pins and diamonds, violet network curve, and mint static RSS arc share one circular baseline and a 24-second timeline">
+<img src="docs/media/orbit-signals-guide.svg" width="100%" alt="Dialogue output, CPU, disk, GPU and network overlap on one circular timeline">
 
-| 图形与默认色 | 读到的信号 |
+| 通道与默认色 | 读到的信号 |
 | --- | --- |
-| 青蓝光带 · **输出** | 页面、运行记录或已确认后台进展的活动变化；不是字节或 Token 吞吐 |
-| 玫红分段柱 · **I/O** | root 进程 `rchar/wchar` 系统调用字节变化；不等于纯磁盘读写 |
-| 琥珀针 / 实心菱形 · **工具** | 主日志中工具返回了结果，包含失败结果；空心菱形仅表示仍有活动工具 |
-| 紫色细曲线 · **网络** | 可关联 TCP 的收发变化；共享、部分覆盖会明确标注 |
-| 薄荷静态弧 · **内存** | 已关联进程树的 RSS，占用信息保持静态 |
+| 薄荷 · **对话输出** | 新增正文的观测字符，排除输入草稿、计时器和日志元数据 |
+| 青蓝 · **CPU** | 进程树执行时间差，`100%` 为一个逻辑核 |
+| 玫红 · **磁盘** | 活跃线程实际磁盘读写增量，缓存与终端字符不冒充读盘 |
+| 琥珀 · **GPU** | NVIDIA 逐进程 SM 采样点，显存占用不冒充计算 |
+| 紫色 · **网络** | 可关联 TCP 收发字节，共享与部分覆盖有标记 |
 
-颜色随皮肤适配，图形含义保持不变。每个会话、每个通道独立缩放，柱高用于看**本通道近期起伏**，不用于跨会话比较效率。静默不生成新波峰，未知不填成零。进入等待、异常或离线，活动立即收起。
+前台不输出时，已绑定后台实验的进展仍可保持运行状态。等待、异常、待核实与离线会清除动态历史；未知指标不补成零。RSS、Token 与工具速度保留在独立说明和用量中，不再驱动旧声浪。
 
-绘图节奏随可见性、活动和自身开销自适应：有新活动时更流畅，静默与迷你模式更克制。短暂视觉过渡只平滑已观测的高度，采样、状态和提醒独立更新，不靠补造流量制造动感。
+绘图按活动与自身开销自适应，GPU 独立低频批量采样；视觉插值不会补造流量或延迟状态。[进程采集与覆盖边界](docs/PROCESS_COLLECTION.zh-CN.md)
+
+设置 → 外观 → **声浪皮肤**：选择光柱、辉光、极光、雷达、曲线或端点，五层造型一起切换。选“跟随界面皮肤”时使用窗口皮肤的默认造型；单独选择后保留该声浪皮肤。波峰继续来自实际观测；无输出、无硬件活动时不制造波动。
 
 **从应用里也能看懂：** 悬浮球右键 → **声浪图说明…**，或设置 → 外观 → **声浪图说明…**。[完整图例、阅读示例与平台覆盖](docs/WAVE_GUIDE.zh-CN.md)
 
@@ -66,7 +68,7 @@ A standalone native macOS monitor for **local Codex sessions and Linux SSH/tmux 
 
 ## 第一次下载，如何配置
 
-1. 在 [**稳定版 5.2.6**](https://github.com/Arkaida/agent-orbit/releases/tag/v5.2.6) 的 **Assets** 下载 `Agent-Orbit-5.2.6-macos-arm64.zip`，用于 Apple Silicon Mac；Intel Mac 可从源码构建。`Source code` 不是可直接运行的应用。
+1. 在 [**5.3.3**](https://github.com/Arkaida/agent-orbit/releases/tag/v5.3.3) 的 **Assets** 下载 `Agent-Orbit-5.3.3-macos-arm64.zip`，用于 Apple Silicon Mac；Intel Mac 可从源码构建。`Source code` 不是可直接运行的应用。
 2. 解压，将 **Agent Orbit.app** 放到“应用程序”或常用目录，双击打开。运行环境已内置，支持 **macOS 13+**。
 3. 先打开你要监控的 Agent 会话，再点小窗齿轮或菜单栏 **AO → 设置… → 监控**，按下面选择来源，最后点底部 **保存设置**。
 
@@ -78,11 +80,11 @@ A standalone native macOS monitor for **local Codex sessions and Linux SSH/tmux 
 
 **新安装默认只监控本机 Codex，不包含本机 Claude。** 尚未打开 Agent 时空列表属于正常情况；Orbit 不会替你启动任务。远端 CLI 需要在 tmux 中运行。SSH 主机框填 `work-server` 或 `user@host`，不要填一整条 `ssh` 命令；关注列表留空表示该 Socket 下全部会话。
 
-第一次使用请按 [**首次配置指南**](https://github.com/Arkaida/agent-orbit/blob/main/docs/GETTING_STARTED.zh-CN.md) 操作：包含 SSH 配置示例、连接验证命令、会话名与 Socket 查找、逐项设置及常见问题，全程无需克隆源码或改 JSON。5.2.6 独立应用的“进入远端”按钮有打包依赖缺失，指南提供终端进入方法；main 已修复，需重新构建后生效。
+第一次使用请按 [**首次配置指南**](https://github.com/Arkaida/agent-orbit/blob/main/docs/GETTING_STARTED.zh-CN.md) 操作：包含 SSH 配置示例、连接验证命令、会话名与 Socket 查找、逐项设置及常见问题，全程无需克隆源码或改 JSON。5.3.3 已修复旧安装包的远端进入按钮，双击卡片即可打开原 tmux 会话。
 
 社区应用使用本地签名，尚未 Apple 公证；如系统阻止打开，请确认来源和校验值后，使用系统“隐私与安全性 → 仍要打开”流程。
 
-### 从 main 体验新声浪
+### 从源码构建
 
 下载应用的用户可跳过此节。需要主分支预览或 Intel 构建时，在 macOS 上安装 Xcode Command Line Tools 与 Python 3.9+ 后：
 
@@ -93,7 +95,7 @@ sh build_desktop.sh
 open 'Agent Orbit.app'
 ```
 
-首次构建下载固定版本、经过 SHA-256 校验的可搬移 Python。构建后的应用可移到其他目录独立运行。
+首次构建下载固定版本、经过 SHA-256 校验的可搬移 Python。构建后的应用可移到其他目录独立运行。Intel Mac 可在自己的机器上按同样步骤构建。
 
 ### 也可以从终端进入
 
@@ -113,14 +115,14 @@ ao atlas            # 进入原远端 tmux 会话
 
 无账户注册、遥测、云端中转或 HTTP 服务。远端经已有 SSH 连接读取；个人设置与关注列表留在本机，发布包不携带个人配置。连接诊断不保存对话正文。
 
-CLI 的日志格式会变化。证据不足时显示待核实；静默、内存占用、后台终端存在或网络活动都不会单独证明完成或仍在工作。声浪用于观察近期活动，状态负责告诉你是否需要返回会话。
+CLI 的日志格式会变化。证据不足时显示待核实；静默、内存占用、后台终端存在或整台服务器繁忙都不会单独证明完成或仍在工作；后台活动必须关联到具体任务。声浪用于观察近期活动，状态负责告诉你是否需要返回会话。
 
 <details>
 <summary>早期版本视频 · 5.2.1 原生界面与虚构数据</summary>
 
 https://github.com/user-attachments/assets/13b256c0-9bb2-414b-a473-045c255d25ad
 
-[下载视频 MP4](https://github.com/Arkaida/agent-orbit/releases/download/v5.2.1/agent-orbit-demo.mp4)。视频展示早期界面，不包含 main 预览的新声浪。
+[下载视频 MP4](https://github.com/Arkaida/agent-orbit/releases/download/v5.2.1/agent-orbit-demo.mp4)。视频展示早期界面，不包含 5.3.3 的五路声浪与新皮肤。
 
 </details>
 

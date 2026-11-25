@@ -336,6 +336,422 @@ class BackgroundTests(unittest.TestCase):
                                         dict(background_count=0, background_checking=True))
         self.assertEqual(result['state'], 'unknown')
 
+class BackgroundExperimentTests(unittest.TestCase):
+    def setUp(self):
+        self.temp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.temp.cleanup)
+        self.folder = Path(self.temp.name)
+        self.path = self.folder / 'session.jsonl'
+        self.output = self.folder / 'bg1.output'
+        self.output.write_text('existing experiment history\n')
+        records = launch()
+        records[1]['toolUseResult']['outputFile'] = str(self.output)
+        records += [dict(type='system', subtype='turn_duration')]
+        self.path.write_text(''.join(json.dumps(item) + '\n' for item in records))
+        self.now = 0.0
+        self.watcher = ClaudeBackgroundWatcher(clock=lambda: self.now)
+
+    def sample(self, at):
+        self.now = at
+        return self.watcher.read_path(str(self.path))
+
+    def row(self, background):
+        return apply_claude_background(analyse_claude_screen('● Foreground complete\n❯ '), background)
+
+    def resources(self, sample_id, cpu=0, disk=0, gpu=None, gpu_id=None, match=True, **extra):
+        info = self.output.stat()
+        files = [dict(device=info.st_dev, inode=info.st_ino if match else info.st_ino + 1)]
+        rows = [dict(pid=10, parent=1, start='root', cpu_percent=999, output_files=[]),
+                dict(pid=11, parent=10, start='shell', cpu_percent=0, output_files=files),
+                dict(pid=12, parent=11, start='experiment', cpu_percent=cpu,
+                     disk_write_per_second=disk, gpu_available=gpu is not None,
+                     gpu_utilization_percent=gpu, gpu_sample_age_seconds=0,
+                     gpu_sample_id=gpu_id, output_files=[]),
+                dict(pid=13, parent=10, start='unrelated', cpu_percent=999, gpu_available=True,
+                     gpu_utilization_percent=100, gpu_sample_age_seconds=0, gpu_sample_id=sample_id, output_files=[])]
+        return dict(identity='synthetic-root', sample_id=sample_id, sample_age_seconds=0,
+                    process_activity=rows, **extra)
+
+    def process_sample(self, at, sample_id, **metrics):
+        background = self.sample(at)
+        return self.watcher.with_process_activity(str(self.path), background, self.resources(sample_id, **metrics),
+                                                 now=at, root_pid=10)
+
+    def test_structured_output_growth_keeps_completed_foreground_background_running(self):
+        baseline = self.sample(0)
+        self.assertEqual((baseline['background_active_terminals'], baseline['background_output_observed_bytes']), (0, 0))
+        self.assertEqual(self.row(baseline)['state'], 'idle')
+        with self.output.open('a') as file:
+            file.write('episode complete\n')
+        progress = self.sample(1)
+        row = self.row(progress)
+        self.assertEqual((row['state'], row['background_activity_source']), ('running', 'output'))
+        self.assertTrue(row['foreground_input_ready'])
+        self.assertIn('后台实验', row['status'])
+        self.assertEqual(row['background_active_terminals'], 1)
+        self.assertEqual(progress['background_output_observed_bytes'], len('episode complete\n'))
+        self.assertEqual(self.sample(5)['background_active_terminals'], 1)
+        self.assertEqual(self.row(self.sample(9.1))['state'], 'idle')
+
+    def test_file_replacement_reset_missing_and_gap_do_not_replay_old_bytes(self):
+        self.sample(0)
+        with self.output.open('a') as file: file.write('new\n')
+        self.assertEqual(self.sample(1)['background_active_terminals'], 1)
+        self.output.rename(self.folder / 'previous.output')
+        self.output.write_text('old replacement history\n' * 100)
+        replaced = self.sample(2)
+        self.assertEqual(replaced['background_active_terminals'], 0)
+        self.assertEqual(replaced['background_output_observed_bytes'], 4)
+        self.output.unlink()
+        self.assertEqual(self.sample(3)['background_active_terminals'], 0)
+        self.output.write_text('reappeared history\n' * 100)
+        self.assertEqual(self.sample(4)['background_active_terminals'], 0)
+        with self.output.open('a') as file: file.write('after gap\n')
+        self.assertEqual(self.sample(20)['background_active_terminals'], 0)
+        with self.output.open('a') as file: file.write('current\n')
+        self.assertEqual(self.sample(21)['background_active_terminals'], 1)
+
+    def test_task_completion_clears_recent_output_activity_immediately(self):
+        self.sample(0)
+        with self.output.open('a') as file: file.write('new output\n')
+        self.assertEqual(self.sample(1)['background_active_terminals'], 1)
+        with self.path.open('a') as log: log.write(json.dumps(finished(queue=True)) + '\n')
+        complete = self.sample(2)
+        self.assertEqual((complete['background_terminals'], complete['background_active_terminals']), (0, 0))
+        self.assertEqual(self.row(complete)['state'], 'idle')
+
+    def test_background_history_replay_cannot_turn_output_backlog_into_progress(self):
+        records = launch()
+        records[1]['toolUseResult']['outputFile'] = str(self.output)
+        prefix = ''.join(json.dumps(item) + '\n' for item in records)
+        filler = json.dumps(dict(type='opaque-history', data='x' * 4096)) + '\n'
+        self.path.write_text(prefix + filler * 2100 + json.dumps(dict(type='system', subtype='turn_duration')) + '\n')
+        first = self.sample(0)
+        self.assertTrue(first['background_checking'])
+        with self.output.open('a') as file: file.write('work during replay\n')
+        complete = self.sample(1)
+        self.assertFalse(complete['background_checking'])
+        self.assertEqual(complete['background_active_terminals'], 0)
+        self.assertEqual(complete['background_output_observed_bytes'], 0)
+        with self.output.open('a') as file: file.write('confirmed current work\n')
+        self.assertEqual(self.sample(2)['background_active_terminals'], 1)
+
+    def test_error_approval_exit_and_history_remain_higher_priority(self):
+        background = dict(self.sample(0), background_active_terminals=1)
+        for state in ('error', 'approval', 'input', 'stopped', 'paused', 'history', 'interrupted'):
+            with self.subTest(state=state):
+                row = apply_claude_background(dict(state=state, status=state, error_kind=''), background)
+                self.assertEqual(row['state'], state)
+                self.assertFalse(row['foreground_input_ready'])
+        row = apply_claude_background(dict(state='running', status='retrying', error_kind='retrying'), background)
+        self.assertEqual(row['status'], 'retrying')
+        self.assertFalse(row['foreground_input_ready'])
+
+    def test_bound_descendant_cpu_requires_continuous_real_samples(self):
+        for at, expected in ((0, 0), (1, 0), (2, 1)):
+            info = self.process_sample(at, at + 1, cpu=100)
+            self.assertEqual(info['background_active_terminals'], expected)
+        self.assertEqual(info['background_activity_sources'], ['cpu'])
+        self.assertEqual(info['background_bound_terminals'], 1)
+        self.assertEqual(self.row(info)['state'], 'running')
+        self.assertTrue(self.row(info)['foreground_input_ready'])
+
+    def test_unbound_cpu_gpu_and_root_cpu_never_promote_retained_terminal(self):
+        for at in range(4):
+            info = self.process_sample(at, at + 1, cpu=.5)
+            self.assertEqual(info['background_active_terminals'], 0)
+        self.assertEqual(self.row(info)['state'], 'idle')
+        for at in range(4, 8):
+            info = self.process_sample(at, at + 1, cpu=100, gpu=100, gpu_id=at, match=False)
+            self.assertEqual(info['background_active_terminals'], 0)
+            self.assertEqual(info['background_bound_terminals'], 0)
+
+    def test_repeated_resource_cache_and_stale_resource_do_not_extend_activity(self):
+        for at in range(3): info = self.process_sample(at, at + 1, cpu=100)
+        self.assertEqual(info['background_active_terminals'], 1)
+        for at in (5, 9):
+            info = self.process_sample(at, 3, cpu=100)
+            self.assertEqual(info['background_active_terminals'], 1)
+        self.assertEqual(self.process_sample(10.1, 3, cpu=100)['background_active_terminals'], 0)
+        background = self.sample(11)
+        resource = self.resources(4, cpu=100)
+        resource['sample_age_seconds'] = 4.1
+        self.assertEqual(self.watcher.with_process_activity(str(self.path), background, resource, now=11)['background_active_terminals'], 0)
+
+    def test_new_process_identity_and_new_collector_establish_baselines(self):
+        for at in range(3): info = self.process_sample(at, at + 1, cpu=100)
+        for change in ('pid_start', 'epoch'):
+            resource = self.resources(4, cpu=100)
+            if change == 'pid_start': resource['process_activity'][1]['start'] = 'reused-shell'
+            else: resource['identity'] = 'new-collector-root'
+            current = self.watcher.with_process_activity(str(self.path), self.sample(3), resource, now=3, root_pid=10)
+            self.assertEqual(current['background_active_terminals'], 0)
+
+    def test_disk_uses_real_disk_counters_and_requires_continuous_samples(self):
+        for at, expected in ((0, 0), (1, 0), (2, 1)):
+            info = self.process_sample(at, at + 1, disk=65536)
+            self.assertEqual(info['background_active_terminals'], expected)
+        self.assertEqual(info['background_activity_sources'], ['disk'])
+
+    def test_gpu_cache_is_not_a_new_observation_and_memory_is_not_activity(self):
+        self.assertEqual(self.process_sample(0, 1, gpu=56, gpu_id=7)['background_active_terminals'], 0)
+        self.assertEqual(self.process_sample(1, 2, gpu=56, gpu_id=7)['background_active_terminals'], 0)
+        info = self.process_sample(2, 3, gpu=56, gpu_id=8)
+        self.assertEqual(info['background_activity_sources'], ['gpu'])
+        for at in (4, 8):
+            self.assertEqual(self.process_sample(at, at + 1, gpu=56, gpu_id=8)['background_active_terminals'], 1)
+        self.assertEqual(self.process_sample(10.1, 12, gpu=56, gpu_id=8)['background_active_terminals'], 0)
+
+    def test_completed_task_cannot_be_reactivated_by_old_process_metrics(self):
+        for at in range(3): self.process_sample(at, at + 1, cpu=100)
+        with self.path.open('a') as log: log.write(json.dumps(finished(queue=True)) + '\n')
+        info = self.process_sample(3, 4, cpu=100)
+        self.assertEqual(info['background_active_terminals'], 0)
+        self.assertEqual(self.row(info)['state'], 'idle')
+
+    def test_structured_persistent_bash_task_id_does_not_become_an_agent(self):
+        records = launch()
+        records[1]['toolUseResult'] = dict(persistent=True, taskId='bg1', timeoutMs=1000, output_file=str(self.output))
+        self.path.write_text(''.join(json.dumps(item) + '\n' for item in records + [dict(type='system', subtype='turn_duration')]))
+        initial = self.sample(0)
+        self.assertEqual((initial['background_terminals'], initial['background_agents']), (1, 0))
+        self.assertEqual(self.row(initial)['state'], 'idle')
+        with self.output.open('a') as file: file.write('current episode\n')
+        self.assertEqual(self.row(self.sample(1))['state'], 'running')
+
+    def test_explicit_workflow_lifecycle_and_transcript_progress_are_not_agents(self):
+        transcripts = self.folder / 'workflow-transcripts'
+        transcripts.mkdir()
+        child = transcripts / 'child.jsonl'
+        child.write_text('existing history\n')
+        records = [dict(type='assistant', message=dict(content=[dict(type='tool_use', name='Workflow', id='workflow-tool', input={})])),
+                   dict(type='user', toolUseResult=dict(taskId='wf1', runId='run1', taskType='local_workflow', status='async_launched', transcriptDir=str(transcripts)),
+                        message=dict(content=[dict(type='tool_result', tool_use_id='workflow-tool', content='launched')])),
+                   dict(type='system', subtype='turn_duration')]
+        self.path.write_text(''.join(json.dumps(item) + '\n' for item in records))
+        initial = self.sample(0)
+        self.assertEqual((initial['background_agents'], initial['background_terminals'], initial['background_log_workflows']), (0, 0, 1))
+        row = self.row(initial)
+        self.assertEqual((row['state'], row['background_count'], row['background_workflows']), ('running', 1, 1))
+        with child.open('a') as file: file.write('new workflow progress\n')
+        progress = self.sample(1)
+        self.assertEqual(progress['background_output_observed_bytes'], len('new workflow progress\n'))
+        (transcripts / 'new-child.jsonl').write_text('preexisting child history\n' * 1000)
+        (transcripts / 'configuration.json').write_text('configuration growth is not work\n')
+        self.assertEqual(self.sample(1.5)['background_output_observed_bytes'], progress['background_output_observed_bytes'])
+        ui = analyse_claude_screen('● Workflow launched\n* Waiting for 1 dynamic workflow to finish\n❯ ')
+        self.assertEqual(apply_claude_background(ui, progress)['background_count'], 1)
+        with self.path.open('a') as log: log.write(json.dumps(finished('wf1', queue=True)) + '\n')
+        self.assertEqual(self.row(self.sample(2))['state'], 'idle')
+
+    def test_unknown_async_task_is_not_classified_as_agent(self):
+        records = [dict(type='assistant', message=dict(content=[dict(type='tool_use', name='Other', id='tool1', input={})])),
+                   dict(type='user', toolUseResult=dict(taskId='unknown1', status='async_launched'),
+                        message=dict(content=[dict(type='tool_result', tool_use_id='tool1', content='launched')])),
+                   dict(type='system', subtype='turn_duration')]
+        self.path.write_text(''.join(json.dumps(item) + '\n' for item in records))
+        info = self.sample(0)
+        self.assertEqual((info['background_agents'], info['background_terminals'], info['background_log_workflows']), (0, 0, 0))
+        self.assertEqual(self.row(info)['state'], 'idle')
+
+    def test_workflow_task_output_and_stop_clear_explicit_lifecycle(self):
+        for tool in ('TaskOutput', 'TaskStop'):
+            with self.subTest(tool=tool):
+                records = [dict(type='assistant', message=dict(content=[dict(type='tool_use', name='Workflow', id='workflow-tool', input={})])),
+                           dict(type='user', toolUseResult=dict(taskId='wf1', taskType='local_workflow', status='async_launched'),
+                                message=dict(content=[dict(type='tool_result', tool_use_id='workflow-tool', content='launched')])),
+                           dict(type='assistant', message=dict(content=[dict(type='tool_use', name=tool, id='finish-tool', input=dict(taskId='wf1'))])),
+                           dict(type='user', toolUseResult=dict(task=dict(taskId='wf1', status='completed')),
+                                message=dict(content=[dict(type='tool_result', tool_use_id='finish-tool', content='completed')])),
+                           dict(type='system', subtype='turn_duration')]
+                self.path.write_text(''.join(json.dumps(item) + '\n' for item in records))
+                watcher = ClaudeBackgroundWatcher()
+                info = watcher.read_path(str(self.path))
+                self.assertEqual(info['background_log_workflows'], 0)
+                self.assertEqual(self.row(info)['state'], 'idle')
+
+    def test_snapshot_applies_bound_resource_evidence_before_final_state_and_guard(self):
+        from contextlib import ExitStack
+        from types import SimpleNamespace
+        from unittest.mock import patch
+        import remote_probe
+        from process_snapshot import ProcessSnapshot
+        session_id = '12345678-1234-1234-1234-123456789abc'
+        renamed = self.folder / (session_id + '.jsonl')
+        self.path.rename(renamed)
+        self.path = renamed
+        processes = ProcessSnapshot({9: (1, 'S', 'bash'), 10: (9, 'S', 'claude'),
+                                     11: (10, 'S', 'bash'), 12: (11, 'R', 'python')})
+        def tmux(command, **kwargs):
+            if 'list-panes' in command:
+                return SimpleNamespace(returncode=0, stdout='synthetic\t0\t0\t%synthetic\tclaude\t/tmp\t0\t9\t\t0\n')
+            if 'capture-pane' in command:
+                return SimpleNamespace(returncode=0, stdout='● Foreground complete\n❯ ')
+            raise AssertionError('Unexpected command')
+        with ExitStack() as stack:
+            stack.enter_context(patch.object(remote_probe, 'read_processes', return_value=processes))
+            stack.enter_context(patch.object(remote_probe.subprocess, 'run', side_effect=tmux))
+            stack.enter_context(patch.object(remote_probe, 'CLAUDE_BACKGROUND', self.watcher))
+            stack.enter_context(patch.object(remote_probe, 'CLAUDE_COMPLETIONS', ClaudeCompletionGuard()))
+            stack.enter_context(patch.object(remote_probe, 'KNOWN_AGENTS', {}))
+            stack.enter_context(patch.object(remote_probe.CLAUDE_LOGS, 'sample', return_value=([], 'turn_complete', True, {})))
+            stack.enter_context(patch.object(remote_probe.CLAUDE_LOGS, 'root_log', return_value=str(self.path)))
+            stack.enter_context(patch.object(remote_probe.USAGE_LOGS, 'sample', return_value={}))
+            stack.enter_context(patch.object(remote_probe.RESULT_LOGS, 'sample', return_value={}))
+            resources = stack.enter_context(patch.object(remote_probe.RESOURCE_SAMPLES, 'sample_all'))
+            clock = stack.enter_context(patch.object(remote_probe.time, 'monotonic'))
+            for at in range(3):
+                self.now = at
+                clock.return_value = at
+                resources.return_value = {10: self.resources(at + 1, cpu=100)}
+                row = remote_probe.snapshot('/synthetic-socket', ['synthetic'])['panes'][0]
+                self.assertEqual(resources.call_args.kwargs, dict(session_contexts={10: session_id}))
+                if at < 2:
+                    self.assertEqual(row['state'], 'unknown')
+                    self.assertIn('核对后台实验', row['status'])
+            self.assertEqual(row['state'], 'running')
+            self.assertIn('后台实验', row['status'])
+            self.assertTrue(row['foreground_input_ready'])
+            self.assertEqual(row['background_activity_sources'], ['cpu'])
+
+    def session_process_sample(self, at, sample_id, cpu=0, gpu=None, gpu_id=None, **extra):
+        self.path.write_text(json.dumps(dict(type='system', subtype='turn_duration')) + '\n')
+        background = self.sample(at)
+        resource = self.resources(sample_id)
+        row = dict(pid=50, parent=1, start='detached-experiment', association='claude_session_env', cpu_percent=cpu,
+                   gpu_available=gpu is not None, gpu_utilization_percent=gpu,
+                   gpu_sample_id=gpu_id, gpu_sample_age_seconds=0, output_files=[])
+        row.update(extra)
+        resource['process_activity'].append(row)
+        return self.watcher.with_process_activity(str(self.path), background, resource, now=at, root_pid=10)
+
+    def test_explicit_session_gpu_process_survives_foreground_and_completed_tool(self):
+        first = self.session_process_sample(0, 1, gpu=56, gpu_id=7)
+        self.assertEqual(first['background_active_session_processes'], 0)
+        self.assertTrue(first['background_process_checking'])
+        second = self.session_process_sample(1, 2, gpu=56, gpu_id=7)
+        self.assertEqual(second['background_active_session_processes'], 0)
+        active = self.session_process_sample(2, 3, gpu=56, gpu_id=8)
+        self.assertEqual((active['background_active_terminals'], active['background_active_session_processes']), (0, 1))
+        self.assertEqual(active['background_activity_sources'], ['gpu'])
+        row = self.row(active)
+        self.assertEqual((row['state'], row['status']), ('running', '后台实验运行中'))
+        self.assertEqual(row['background_count'], 0)  # A GPU PID is not a task.
+        self.assertTrue(row['foreground_input_ready'])
+
+    def test_explicit_session_cpu_needs_continuous_samples_and_presence_is_not_work(self):
+        for at in range(3):
+            idle = self.session_process_sample(at, at + 1, cpu=0, gpu=0, gpu_id=at, gpu_memory_bytes=9999999999)
+            self.assertEqual(self.row(idle)['state'], 'idle')
+        for at, expected in ((3, 0), (4, 1)):
+            active = self.session_process_sample(at, at + 1, cpu=100, gpu=0, gpu_id=at)
+            self.assertEqual(active['background_active_session_processes'], expected)
+        self.assertEqual(active['background_activity_sources'], ['cpu'])
+
+    def test_session_gpu_cache_memory_and_unconfirmed_association_are_not_progress(self):
+        self.session_process_sample(0, 1, gpu=56, gpu_id=7)
+        for at in range(1, 4):
+            cached = self.session_process_sample(at, at + 1, gpu=56, gpu_id=7)
+            self.assertEqual(cached['background_active_session_processes'], 0)
+        for at in range(4, 7):
+            unconfirmed = self.session_process_sample(at, at + 1, cpu=100, gpu=100, gpu_id=at, association='process_tree')
+            self.assertEqual(unconfirmed['background_active_session_processes'], 0)
+            self.assertEqual(self.row(unconfirmed)['state'], 'idle')
+
+    def test_session_zero_activity_expires_and_missing_or_reused_pid_clears_proof(self):
+        self.session_process_sample(0, 1, gpu=56, gpu_id=1)
+        active = self.session_process_sample(1, 2, gpu=56, gpu_id=2)
+        self.assertEqual(active['background_active_session_processes'], 1)
+        for at in (3, 5, 7, 9.1):
+            quiet = self.session_process_sample(at, int(at) + 3, gpu=0, gpu_id=at)
+        self.assertEqual(self.row(quiet)['state'], 'idle')
+        resumed = self.session_process_sample(10, 14, gpu=56, gpu_id=10)
+        self.assertEqual(resumed['background_active_session_processes'], 1)
+        reused = self.session_process_sample(11, 15, gpu=56, gpu_id=11, start='reused-pid')
+        self.assertEqual(reused['background_active_session_processes'], 0)
+        background = self.sample(12)
+        missing = self.watcher.with_process_activity(str(self.path), background, self.resources(16), now=12, root_pid=10)
+        self.assertEqual(missing['background_active_session_processes'], 0)
+
+    def test_missing_and_stale_resources_do_not_complete_previously_active_background(self):
+        for at in range(3): active = self.process_sample(at, at + 1, cpu=100)
+        self.assertEqual(self.row(active)['state'], 'running')
+        for at in (3, 4):
+            missing = self.watcher.with_process_activity(str(self.path), self.sample(at), None, now=at, root_pid=10)
+            self.assertEqual(self.row(missing)['state'], 'unknown')
+            self.assertTrue(missing['background_process_unobserved'])
+            self.assertTrue(self.row(missing)['foreground_input_ready'])
+            self.assertEqual(missing['background_active_terminals'], 0)
+        stale_resource = self.resources(4, cpu=100)
+        stale_resource['sample_age_seconds'] = 4.1
+        stale = self.watcher.with_process_activity(str(self.path), self.sample(5), stale_resource, now=5, root_pid=10)
+        self.assertEqual(self.row(stale)['state'], 'unknown')
+        for at in (6, 8, 10.1): quiet = self.process_sample(at, int(at) + 5, cpu=0)
+        self.assertEqual(self.row(quiet)['state'], 'idle')
+        self.assertFalse(quiet['background_process_unobserved'])
+
+    def test_gpu_observation_gap_cannot_be_finished_by_unrelated_cpu_zero(self):
+        self.session_process_sample(0, 1, gpu=56, gpu_id=1)
+        self.assertEqual(self.row(self.session_process_sample(1, 2, gpu=56, gpu_id=2))['state'], 'running')
+        for at in (3, 5, 7, 9.1):
+            gap = self.session_process_sample(at, int(at) + 3, cpu=0, gpu=None)
+        self.assertEqual(gap['background_active_session_processes'], 0)
+        self.assertEqual(self.row(gap)['state'], 'unknown')
+        self.assertTrue(gap['background_process_unobserved'])
+        restored = self.session_process_sample(10, 14, cpu=0, gpu=0, gpu_id=10)
+        self.assertEqual(self.row(restored)['state'], 'idle')
+        self.assertFalse(restored['background_process_unobserved'])
+
+    def test_fresh_snapshot_confirms_missing_active_pid_without_reusing_old_evidence(self):
+        self.session_process_sample(0, 1, gpu=56, gpu_id=1)
+        self.session_process_sample(1, 2, gpu=56, gpu_id=2)
+        missing = self.watcher.with_process_activity(str(self.path), self.sample(2), None, now=2, root_pid=10)
+        self.assertEqual(self.row(missing)['state'], 'unknown')
+        exited = self.watcher.with_process_activity(str(self.path), self.sample(3), self.resources(4),
+                                                   now=3, root_pid=10, processes={10: (1, 'S', 'claude')})
+        self.assertEqual(self.row(exited)['state'], 'idle')
+        self.assertEqual(exited['background_active_session_processes'], 0)
+
+    def test_missing_initial_resource_and_plain_retained_shell_are_not_unknown(self):
+        initial = self.watcher.with_process_activity(str(self.path), self.sample(0), None, now=0, root_pid=10)
+        self.assertEqual(self.row(initial)['state'], 'idle')
+        for at in range(1, 4):
+            idle = self.process_sample(at, at + 1, cpu=0)
+        gap = self.watcher.with_process_activity(str(self.path), self.sample(4), None, now=4, root_pid=10)
+        self.assertEqual(self.row(gap)['state'], 'idle')
+        self.assertFalse(gap['background_process_unobserved'])
+
+    def test_new_output_and_explicit_task_stop_take_priority_over_resource_gap(self):
+        for at in range(3): self.process_sample(at, at + 1, cpu=100)
+        unknown = self.watcher.with_process_activity(str(self.path), self.sample(3), None, now=3, root_pid=10)
+        self.assertEqual(self.row(unknown)['state'], 'unknown')
+        with self.output.open('a') as output: output.write('new confirmed experiment progress\n')
+        progress = self.watcher.with_process_activity(str(self.path), self.sample(4), None, now=4, root_pid=10)
+        self.assertEqual(self.row(progress)['state'], 'running')
+        self.assertIn('output', progress['background_activity_sources'])
+        with self.path.open('a') as log: log.write(json.dumps(finished(status='stopped', queue=True)) + '\n')
+        stopped = self.watcher.with_process_activity(str(self.path), self.sample(5), None, now=5, root_pid=10)
+        self.assertEqual(self.row(stopped)['state'], 'idle')
+        self.assertFalse(stopped['background_process_unobserved'])
+
+    def test_epoch_and_child_pid_reuse_require_confirmation_without_old_activity(self):
+        for at in range(3): self.process_sample(at, at + 1, cpu=100)
+        resource = self.resources(4, cpu=0)
+        resource['identity'] = 'new-collector'
+        resource['process_activity'][2]['cpu_percent'] = None
+        changed = self.watcher.with_process_activity(str(self.path), self.sample(3), resource, now=3, root_pid=10)
+        self.assertEqual(changed['background_active_terminals'], 0)
+        self.assertEqual(self.row(changed)['state'], 'unknown')
+        # A new instance of a child beneath the same retained shell cannot use
+        # the former child's CPU signal, even when the shell binding is stable.
+        self.watcher = ClaudeBackgroundWatcher(clock=lambda: self.now)
+        for at in range(4, 7): self.process_sample(at, at + 1, cpu=100)
+        reused = self.resources(8, cpu=0)
+        reused['process_activity'][2].update(start='reused-child', cpu_percent=None)
+        current = self.watcher.with_process_activity(str(self.path), self.sample(7), reused, now=7, root_pid=10)
+        self.assertEqual(current['background_active_terminals'], 0)
+        self.assertEqual(self.row(current)['state'], 'unknown')
+
 
 if __name__ == '__main__':
     unittest.main()

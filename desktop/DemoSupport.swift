@@ -9,7 +9,7 @@ enum DemoSupport {
         settings.host = "demo-server"; settings.localCodexHome = "/Users/demo/.codex"
         settings.theme = theme; settings.sound = false; settings.reduceMotion = true
         model.settings = settings; model.sound = false
-        ThemePalette.configure(theme: theme, statusStyle: settings.orbitLabelColor)
+        ThemePalette.configure(theme: theme, statusStyle: settings.orbitLabelColor, waveStyle: settings.waveStyle)
         model.followed = ["atlas", "nova"]
     }
     static func snapshot(_ step: Int) -> Snapshot {
@@ -164,16 +164,25 @@ enum DemoSupport {
             let shift = index * 3
             let identity = "demo-signals-\(index)"
             value.rows[index].outputTotal = 1000 + sum(output, shift: shift)
+            value.rows[index].dialogueOutput = DialogueOutput(epoch: identity + "-body", sampleId: step + 1,
+                totalChars: 1000 + sum(output, shift: shift), available: true, complete: false,
+                sampleAgeSeconds: 0, source: "assistant_screen")
             value.rows[index].usageMetrics?.rootIdentity = identity
             value.rows[index].usageMetrics?.toolCompletions = 100 + (0...step).filter { ($0 + shift) % 9 == 4 }.count
             value.rows[index].usageMetrics?.toolsEpoch = 1
             value.rows[index].usageMetrics?.activeTools = step % 9 < 4 ? 1 : 0
             let dictionary: [String: Any] = [
-                "identity": identity, "epoch": identity, "sample_id": step + 1, "sample_age_seconds": 0,
+                "identity": identity, "epoch": identity, "sample_id": step + 1, "sample_age_seconds": 0, "interval_seconds": 0.5,
+                "cpu_percent": [0, 12, 35, 90, 160, 40, 0, 240, 70, 320, 25, 0][(step + shift) % 12],
+                "cpu_available": true, "cpu_complete": true,
+                "gpu_utilization_percent": [0, 20, 55, 90, 30, 0, 85, 60, 0, 40, 95, 15][(step + shift + 4) % 12],
+                "gpu_available": true, "gpu_complete": true, "gpu_sample_id": step + 1, "gpu_sample_age_seconds": 0, "gpu_poll_interval_seconds": 0.5,
                 "scope": "process_tree", "process_count": index + 2, "tree_complete": true,
                 "memory_bytes": (240 + index * 140) * 1_048_576, "host_memory_bytes": 8_589_934_592,
                 "memory_available": true, "memory_complete": true,
                 "io_read_bytes": 1024 + sum(io, shift: shift), "io_write_bytes": 2048 + sum(io, shift: shift + 2) / 4,
+                "disk_read_bytes": 1024 + sum(io, shift: shift), "disk_write_bytes": 2048 + sum(io, shift: shift + 2) / 4,
+                "disk_read_per_second": io[(step + shift) % io.count] * 2, "disk_write_per_second": io[(step + shift + 2) % io.count] / 2,
                 "io_read_per_second": io[(step + shift) % io.count] * 2,
                 "io_write_per_second": io[(step + shift + 2) % io.count] / 2,
                 "io_available": true, "io_complete": true,

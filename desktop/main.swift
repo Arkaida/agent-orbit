@@ -80,6 +80,7 @@ struct Pane: Decodable, Identifiable, Equatable {
     var responseGroup: SessionResponseGroup?
     var usageMetrics: UsageMetrics?
     var resources: ResourceMetrics?
+    var dialogueOutput: DialogueOutput?
     var manualRunning: Bool?
     var manualOverrideId: String?
     var resultMarker: String?
@@ -279,6 +280,26 @@ struct UsageMetrics: Decodable, Equatable {
     }
 }
 
+/// Visible assistant body observations, independent of token/tool/resource counters.
+struct DialogueOutput: Decodable, Equatable {
+    var epoch: String?
+    var sampleId: Int?
+    var totalChars: Int?
+    var available: Bool?
+    var complete: Bool?
+    var sampleAgeSeconds: Double?
+    var source: String?
+    var isFresh: Bool { isFresh(maxAge: 4) }
+    func isFresh(maxAge: TimeInterval) -> Bool {
+        guard available == true, let epoch, !epoch.isEmpty,
+              let sampleId, sampleId >= 0, let totalChars, totalChars >= 0,
+              maxAge.isFinite, maxAge >= 0,
+              let sampleAgeSeconds, sampleAgeSeconds.isFinite,
+              sampleAgeSeconds >= 0, sampleAgeSeconds <= maxAge else { return false }
+        return true
+    }
+}
+
 /// Resource observations describe process ownership, independently of task state.
 struct ResourceMetrics: Decodable, Equatable {
     var identity: String?
@@ -287,8 +308,38 @@ struct ResourceMetrics: Decodable, Equatable {
     var sampleAgeSeconds: Double?
     var scope: String?
     var processCount: Int?
+    var associatedProcessCount: Int?
+    var associatedGpuProcessCount: Int?
     var sharedSessions: Int?
     var treeComplete: Bool?
+    var attribution: String?
+    var attributionSource: String?
+    var cpuSeconds: Double?
+    var cpuPercent: Double?
+    var cpuAvailable: Bool?
+    var cpuComplete: Bool?
+    var cpuCovered: Int?
+    var cpuScope: String?
+    var cpuReason: String?
+    var gpuUtilizationPercent: Double?
+    var gpuAvailable: Bool?
+    var gpuComplete: Bool?
+    var gpuCovered: Int?
+    var gpuReason: String?
+    var gpuScope: String?
+    var gpuKind: String?
+    var gpuProcessCount: Int?
+    var gpuDeviceCount: Int?
+    var gpuSampleId: Int?
+    var gpuSampleAgeSeconds: Double?
+    var gpuIntervalSeconds: Double?
+    var gpuPollIntervalSeconds: Double?
+    var gpuAggregation: String?
+    var intervalSeconds: Double?
+    var diskReadBytes: Int?
+    var diskWriteBytes: Int?
+    var diskReadPerSecond: Double?
+    var diskWritePerSecond: Double?
     var memoryBytes: Int?
     var hostMemoryBytes: Int?
     var memoryAvailable: Bool?
@@ -303,6 +354,8 @@ struct ResourceMetrics: Decodable, Equatable {
     var ioScope: String?
     var ioKind: String?
     var ioReason: String?
+    var ioLowerBound: Bool?
+    var ioAccounting: String?
     var networkRxBytes: Int?
     var networkTxBytes: Int?
     var networkRxPerSecond: Double?
@@ -313,6 +366,21 @@ struct ResourceMetrics: Decodable, Equatable {
     var networkScope: String?
     var networkReason: String?
     var isFresh: Bool { sampleAgeSeconds.map { $0.isFinite && $0 >= 0 && $0 <= 4 } ?? true }
+    var observedCPUPercent: Double? {
+        guard isFresh, cpuAvailable == true, let value = cpuPercent, value.isFinite, value >= 0 else { return nil }
+        return value
+    }
+    var observedGPUPercent: Double? {
+        guard isFresh, gpuAvailable == true,
+              gpuSampleAgeSeconds.map({ $0.isFinite && $0 >= 0 }) ?? true,
+              (gpuSampleAgeSeconds ?? 0) + (sampleAgeSeconds ?? 0) <= 4,
+              let value = gpuUtilizationPercent, value.isFinite, value >= 0 else { return nil }
+        return value
+    }
+    static func cpu(_ value: Double?) -> String {
+        guard let value = value, value.isFinite, value >= 0 else { return "—" }
+        return String(format: value >= 10_000 ? "%.2g%%" : "%.1f%%", value)
+    }
     static func bytes(_ value: Int?) -> String {
         guard let value = value, value >= 0 else { return "—" }
         return ByteCountFormatter.string(fromByteCount: Int64(value), countStyle: .binary)
@@ -327,14 +395,37 @@ struct ResourceMetrics: Decodable, Equatable {
     func summary(connected: Bool) -> String {
         guard connected && isFresh else { return "资源未观测" }
         var lines: [String] = []
-        if scope == "shared_process" { lines.append("共享进程资源，无法拆分到单个会话") }
+        let associated = max(associatedProcessCount ?? 0, associatedGpuProcessCount ?? 0)
+        let sessionScope = scope == "session_processes" || associated > 0
+        func processLabel(_ metricScope: String? = nil) -> String {
+            sessionScope || metricScope == "session_processes" ? "会话关联进程" : "进程树"
+        }
+        if associated > 0 { lines.append("关联后台进程 \(associated) 个") }
+        if scope == "shared_process" || attribution == "shared" { lines.append("共享进程资源，无法拆分到单个会话") }
+        else if attribution == "unattributed" { lines.append("进程资源归属待确认，不能视为此会话的专属用量") }
+        if let cpu = observedCPUPercent {
+            lines.append(processLabel(cpuScope) + " CPU \(Self.cpu(cpu))（单核 100%）" + (cpuComplete == true ? "" : "（部分）"))
+        } else { lines.append(processLabel(cpuScope) + " CPU 未观测") }
+        if let gpu = observedGPUPercent {
+            lines.append(processLabel(gpuScope) + " GPU SM " + Self.cpu(gpu) + "（进程采样合计）" + (gpuComplete == true ? "" : "（部分）"))
+        } else { lines.append(processLabel(gpuScope) + " GPU 未观测") }
+        let diskRates = [diskReadPerSecond, diskWritePerSecond].compactMap { $0 }.filter { $0.isFinite && $0 >= 0 }
+        if ioAvailable == true && !diskRates.isEmpty {
+            lines.append("磁盘 读 " + Self.rate(diskReadPerSecond) + "，写 " + Self.rate(diskWritePerSecond) + "（观测下界）" + (ioComplete == true ? "" : "（部分）"))
+        } else { lines.append("磁盘读写未观测") }
         let memory = memoryAvailable == true ? Self.bytes(memoryBytes) : "—"
-        lines.append("进程树 RSS \(memory)" + (memoryAvailable == true && memoryComplete != true ? "（部分）" : "") + "；共享内存页可能重复计入")
+        lines.append(processLabel() + " RSS \(memory)" + (memoryAvailable == true && memoryComplete != true ? "（部分）" : "") + "；共享内存页可能重复计入")
         let net = networkAvailable == true
             ? "TCP ↓\(Self.rate(networkRxPerSecond)) ↑\(Self.rate(networkTxPerSecond))" + (networkComplete == true ? "" : "（部分）")
             : "TCP 流量未观测"
         lines.append(net + (networkShared == true ? "；共享连接未重复分摊" : ""))
-        lines.append(ioAvailable == true ? "根进程 I/O 读 \(Self.rate(ioReadPerSecond))，写 \(Self.rate(ioWritePerSecond))（系统调用字节，含已回收子进程）" : "根进程 I/O 未观测")
+        if ioAvailable == true {
+            let sessionThreads = ioScope == "observed_session_process_threads"
+            let treeThreads = sessionThreads || ioScope == "observed_process_tree_threads"
+            let label = sessionThreads ? "会话关联进程 I/O" : treeThreads ? "进程树 I/O" : ioScope == "root_process_with_reaped_children" ? "根进程 I/O" : "进程 I/O"
+            let accounting = treeThreads ? "活跃线程系统调用字节，观测下界" : ioScope == "root_process_with_reaped_children" ? "系统调用字节，含已回收子进程" : "系统调用字节，采集范围未标明"
+            lines.append("\(label) 读 \(Self.rate(ioReadPerSecond))，写 \(Self.rate(ioWritePerSecond))（\(accounting)）" + (ioComplete == true ? "" : "（部分）"))
+        } else { lines.append("进程 I/O 未观测") }
         return lines.joined(separator: "\n")
     }
 }
@@ -699,7 +790,7 @@ final class PanelModel: ObservableObject {
         if CommandLine.arguments.contains("--host") { initial.host = argument("--host", fallback: initial.host); initial.remoteEnabled = !initial.host.isEmpty }
         if CommandLine.arguments.contains("--socket") { initial.tmuxSocket = argument("--socket", fallback: initial.tmuxSocket) }
         settings = initial
-        ThemePalette.configure(theme: initial.theme, statusStyle: initial.orbitLabelColor)
+        ThemePalette.configure(theme: initial.theme, statusStyle: initial.orbitLabelColor, waveStyle: initial.waveStyle)
         sound = initial.sound; pinned = initial.pinned
         try? manager.createDirectory(at: dataRoot, withIntermediateDirectories: true, attributes: [.posixPermissions: 0o700])
         let followURL = dataRoot.appendingPathComponent("follow.json")
@@ -725,7 +816,7 @@ final class PanelModel: ObservableObject {
         let url = dataRoot.appendingPathComponent("settings.json")
         if (try? Data(contentsOf: url)) != encoded { try encoded.write(to: url, options: .atomic) }
         if settings.theme != value.theme || settings.orbitLabelColor != value.orbitLabelColor {
-            ThemePalette.configure(theme: value.theme, statusStyle: value.orbitLabelColor)
+            ThemePalette.configure(theme: value.theme, statusStyle: value.orbitLabelColor, waveStyle: value.waveStyle)
         }
         if (try? settings.encoded()) != encoded { settings = value }
         if sound != value.sound { sound = value.sound }

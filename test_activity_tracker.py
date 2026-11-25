@@ -149,5 +149,171 @@ class ActivityTests(unittest.TestCase):
         self.assertEqual(state.rows[0]['output_rate'], 0)
 
 
+class DialogueOutputTests(unittest.TestCase):
+    def setUp(self):
+        self.tracker = ActivityTracker()
+
+    def observe(self, text='answer', now=0, sample=None, epoch=0, **values):
+        item = row(dialogue_text=text, dialogue_source='assistant_screen',
+                   dialogue_identity='terminal:codex', dialogue_available=True,
+                   dialogue_complete=False, dialogue_sample_id=str(now if sample is None else sample))
+        item.update(values)
+        return self.tracker.update([item], now, epoch=epoch)[0]['dialogue_output']
+
+    def test_visible_output_is_independent_of_hardware_and_mixed_activity(self):
+        baseline = self.observe('abc')
+        changed = self.observe('abc1234567890', 1)
+        self.assertEqual(baseline['total_chars'], 0)
+        self.assertEqual(changed['total_chars'], 10)
+        noisy = self.observe('abc1234567890', 2, background_output_bytes=9999,
+                             background_revision=5, background_progress='4/4',
+                             lifecycle_cursor=dict(path='/log', device=1, inode=2, offset=9999),
+                             agent='claude', working='* Thinking… (9s · ↓ 10k tokens)')
+        # Root identity was newly discovered, so it establishes a fresh stream.
+        self.assertEqual(noisy['total_chars'], 0)
+        same = self.observe('abc1234567890', 3, background_output_bytes=19999,
+                            lifecycle_cursor=dict(path='/log', device=1, inode=2, offset=19999),
+                            agent='claude', working='* Thinking… (10s · ↓ 20k tokens)')
+        self.assertEqual(same['total_chars'], 0)
+
+    def test_reflow_deletion_scroll_and_uncertain_replacement(self):
+        self.observe('one two three')
+        self.assertEqual(self.observe('one\n two\n three', 1)['total_chars'], 0)
+        self.assertEqual(self.observe('two three', 2)['total_chars'], 0)
+        self.assertEqual(self.observe('three four', 3)['total_chars'], 4)
+        self.assertEqual(self.observe('unrelated screen', 4)['total_chars'], 4)
+        self.assertEqual(self.observe('unrelated screen正文', 5)['total_chars'], 6)
+
+    def test_baselines_for_epoch_process_identity_and_direct_gap(self):
+        first = self.observe('abc')
+        changed = self.observe('abcd', 1)
+        self.assertEqual(changed['total_chars'], 1)
+        gap = self.observe('abcde backlog', 4)
+        self.assertEqual(gap['total_chars'], 0)
+        self.assertNotEqual(gap['epoch'], first['epoch'])
+        reconnected = self.observe('more backlog', 5, epoch=1)
+        self.assertEqual(reconnected['total_chars'], 0)
+        self.assertNotEqual(reconnected['epoch'], gap['epoch'])
+        replacement = self.observe('other source backlog', 6, epoch=1, dialogue_identity='new-log')
+        self.assertEqual(replacement['total_chars'], 0)
+        self.assertNotEqual(replacement['epoch'], reconnected['epoch'])
+        process = self.observe('replacement process', 7, epoch=1, process_id=2)
+        self.assertNotEqual(process['epoch'], replacement['epoch'])
+
+    def test_completed_final_chunk_and_resume_do_not_replay_history(self):
+        self.observe('abc')
+        final = self.observe('abc final chunk', 1, state='idle')
+        self.assertEqual(final['total_chars'], 0)
+        resumed = self.observe('abc final chunk', 2)
+        self.assertEqual(resumed['total_chars'], 0)
+        self.assertNotEqual(resumed['epoch'], final['epoch'])
+        self.assertEqual(self.observe('abc final chunk new', 3)['total_chars'], 3)
+
+    def test_missing_history_and_error_sources_never_manufacture_output(self):
+        self.observe('abc')
+        unavailable = self.observe('abc user input', 1, dialogue_available=False)
+        self.assertFalse(unavailable['available'])
+        recovered = self.observe('abc history', 2)
+        self.assertTrue(recovered['available'])
+        self.assertEqual(recovered['total_chars'], 0)
+        self.assertNotEqual(recovered['epoch'], unavailable['epoch'])
+        self.assertEqual(self.observe('abc history unsafe', 3, error_kind='question')['total_chars'], 0)
+        self.assertEqual(self.observe('abc history unsafe', 4)['total_chars'], 0)
+        legacy = self.tracker.update([row('many bytes')], 5)[0]['dialogue_output']
+        self.assertFalse(legacy['available'])
+        self.assertEqual(legacy['total_chars'], 0)
+
+    def test_reused_payload_does_not_renew_sample_freshness(self):
+        baseline = self.observe('abc', 0, sample='first')
+        reused = self.observe('abc', 1, sample='first')
+        self.assertEqual(reused['sample_id'], baseline['sample_id'])
+        self.assertEqual(reused['sample_age_seconds'], 1)
+        reused_later = self.observe('abc', 4, sample='first')
+        self.assertEqual(reused_later['sample_age_seconds'], 4)
+        recovered = self.observe('abc backlog', 5, sample='new')
+        self.assertNotEqual(recovered['epoch'], baseline['epoch'])
+        self.assertEqual(recovered['total_chars'], 0)
+
+    def test_real_quiet_observations_stay_fresh_and_next_chunk_counts(self):
+        first = self.observe('abc', 0)
+        for second in range(1, 7):
+            quiet = self.observe('abc', second)
+            self.assertEqual(quiet['sample_id'], second + 1)
+            self.assertEqual(quiet['sample_age_seconds'], 0)
+            self.assertEqual(quiet['epoch'], first['epoch'])
+        self.assertEqual(self.observe('abc新结果', 7)['total_chars'], 3)
+
+    @staticmethod
+    def collector_frame(text, sample):
+        return dict(panes=[row(dialogue_text=text, dialogue_source='assistant_screen',
+                               dialogue_identity='terminal:codex', dialogue_available=True,
+                               dialogue_sample_id=str(sample))])
+
+    def test_bridge_counts_dialogue_at_configured_three_and_five_second_intervals(self):
+        for interval in (3, 5):
+            with self.subTest(interval=interval):
+                state = FeedState()
+                gap = max(2, interval * 3)
+                for sample, text in enumerate(('abc', 'abcdef', 'abcdefghi')):
+                    now = sample * interval
+                    state.accept(self.collector_frame(text, sample), ['x'], 1, now, now,
+                                 max_gap_seconds=gap)
+                    observed = state.rows[0]['dialogue_output']
+                    self.assertEqual(observed['total_chars'], sample * 3)
+                    self.assertEqual(observed['sample_id'], sample + 1)
+                    if sample == 0:
+                        epoch = observed['epoch']
+                    else:
+                        self.assertEqual(observed['epoch'], epoch)
+
+    def test_configured_slow_sampling_still_baselines_gaps_reconnects_and_replays(self):
+        state = FeedState(); gap = 15
+        state.accept(self.collector_frame('abc', 0), ['x'], 1, 0, 0, max_gap_seconds=gap)
+        state.accept(self.collector_frame('abcdef', 1), ['x'], 1, 5, 5, max_gap_seconds=gap)
+        active = state.rows[0]['dialogue_output']
+        self.assertEqual(active['total_chars'], 3)
+        # Heartbeats/reused frames do not extend the producer's observation age.
+        for now in (10, 15, 20):
+            state.accept(self.collector_frame('abcdef', 1), ['x'], 1, now, now, max_gap_seconds=gap)
+            self.assertEqual(state.rows[0]['dialogue_output']['sample_id'], active['sample_id'])
+        state.accept(self.collector_frame('abcdef missed backlog', 2), ['x'], 1, 25, 25, max_gap_seconds=gap)
+        resumed = state.rows[0]['dialogue_output']
+        self.assertEqual(resumed['total_chars'], 0)
+        self.assertNotEqual(resumed['epoch'], active['epoch'])
+        state.accept(self.collector_frame('abcdef missed backlog more', 3), ['x'], 2, 30, 30, max_gap_seconds=gap)
+        reconnected = state.rows[0]['dialogue_output']
+        self.assertEqual(reconnected['total_chars'], 0)
+        self.assertNotEqual(reconnected['epoch'], resumed['epoch'])
+        state.accept(self.collector_frame('abcdef missed backlog more output', 4), ['x'], 2, 50, 50, max_gap_seconds=gap)
+        self.assertEqual(state.rows[0]['dialogue_output']['total_chars'], 0)
+        self.assertNotEqual(state.rows[0]['dialogue_output']['epoch'], reconnected['epoch'])
+
+    def test_aliases_share_epoch_and_count_but_shared_pid_logs_do_not(self):
+        def aliases(text, sample):
+            common = row(dialogue_text=text, dialogue_source='assistant_screen',
+                         dialogue_identity='terminal:codex', dialogue_available=True,
+                         dialogue_sample_id=sample)
+            return [common, dict(common, pane_id='%2', session='alias')]
+        first = self.tracker.update(aliases('abc', '1'), 0)
+        second = self.tracker.update(aliases('abcdef', '2'), 1)
+        self.assertEqual(first[0]['dialogue_output'], first[1]['dialogue_output'])
+        self.assertEqual(second[0]['dialogue_output'], second[1]['dialogue_output'])
+        self.assertEqual(second[0]['dialogue_output']['total_chars'], 3)
+        independent = aliases('x', '3')
+        independent[0]['dialogue_identity'] = 'assistant-log:1'
+        independent[1]['dialogue_identity'] = 'assistant-log:2'
+        result = self.tracker.update(independent, 2)
+        self.assertNotEqual(result[0]['dialogue_output']['epoch'], result[1]['dialogue_output']['epoch'])
+
+    def test_bound_and_input_preservation_and_unique_tracker_instances(self):
+        self.observe('x' * 40000)
+        self.assertEqual(len(next(iter(self.tracker.dialogue.streams.values()))['text']), 16384)
+        item = row(dialogue_text='abc', dialogue_available=True, dialogue_source='assistant_screen')
+        a = self.tracker.update([item], 1)[0]['dialogue_output']
+        b = ActivityTracker().update([item], 1)[0]['dialogue_output']
+        self.assertNotIn('dialogue_output', item)
+        self.assertNotEqual(a['epoch'], b['epoch'])
+
+
 if __name__ == '__main__':
     unittest.main()

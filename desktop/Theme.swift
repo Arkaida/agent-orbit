@@ -9,41 +9,68 @@ enum ThemeRole: String, CaseIterable {
 
 /// Resource channels describe measurements; their colors never select a session state.
 enum ResourceRole: String, CaseIterable {
-    case output, io, tools, network, memory
+    case cpu, gpu, disk, network, output
     var title: String {
         switch self {
-        case .output: return "输出"
-        case .io: return "进程 I/O"
-        case .tools: return "工具"
+        case .cpu: return "CPU"
+        case .gpu: return "GPU"
+        case .disk: return "磁盘"
         case .network: return "网络"
-        case .memory: return "内存"
+        case .output: return "对话输出"
         }
     }
     var description: String {
         switch self {
-        case .output: return "页面、运行记录或已确认后台进展的活动变化；这是显示活动量，不等于字节吞吐、Token 消耗或完成状态。"
-        case .io: return "根进程 rchar / wchar 的变化，即系统调用读写字节；包含缓存、管道等，并非纯磁盘读写，也不是整个会话的精确 I/O。"
-        case .tools: return "空心菱形表示工具已发起、尚未返回，是静态标记；实心菱形针表示新观测到工具返回。没有新返回就没有事件波峰，返回不等于执行成功、任务完成或成功率。"
-        case .network: return "所选进程树可归属的 TCP 收发字节。共享连接、权限或平台限制可能让数据只有部分覆盖；未观测不会当作零。"
-        case .memory: return "进程树的常驻内存 RSS，显示为静态标记；共享内存页可能重复计入。占用内存不代表正在工作。"
+        case .cpu: return "已关联进程连续 CPU 执行时间换算的占用率；100% 表示一个逻辑核，多核可超过100%。不是模型思考速度。"
+        case .gpu: return "Linux NVIDIA 已关联进程的 SM 利用率采样合计，多个进程或多卡合计可超过100%；来自真实进程指标的采样点，不把查询间隔当作持续活动，也不用显存占用推算。平台或驱动未提供时保持未观测。"
+        case .disk: return "Linux 已关联进程中观测到的活跃线程的 read_bytes / write_bytes 增量；反映存储层实际读写计数，不把缓存、终端或管道的系统调用字节混入。短命任务和权限限制可能降低覆盖。"
+        case .network: return "所选关联进程可归属的 TCP 收发字节。共享连接、权限或平台限制可能让数据只有部分覆盖；未观测不会当作零。"
+        case .output: return "本次观测新增的助手正文非空白 Unicode 字符，不含用户输入、工具或后台元数据、计时器及 Token 计数。单位为观测字符/秒；日志和终端只覆盖部分正文时标为观测下界，不代表完整生成速度。"
         }
     }
     var graphicDescription: String {
         switch self {
-        case .output: return "连续填充光带 · 新增输出越多，起伏越明显"
-        case .io: return "分段短柱 · 读写增量越大，柱越高"
-        case .tools: return "空心菱形标记未返回；实心菱形针标记新返回"
-        case .network: return "细曲线与峰帽 · 收发增量越大，起伏越明显"
-        case .memory: return "静态细弧 · 按所占主机内存比例显示"
+        case .cpu: return "CPU 通道色 · CPU 占用率越高，起伏越明显；造型跟随所选声浪皮肤"
+        case .gpu: return "GPU 通道色 · GPU SM 利用率越高，起伏越明显；造型跟随所选声浪皮肤"
+        case .disk: return "磁盘通道色 · 实际读写增量越大，起伏越明显；造型跟随所选声浪皮肤"
+        case .network: return "网络通道色 · TCP 收发增量越大，起伏越明显；造型跟随所选声浪皮肤"
+        case .output: return "对话输出通道色 · 新增助手正文越多，起伏越明显；造型跟随所选声浪皮肤"
         }
     }
     var symbolName: String {
         switch self {
-        case .output: return "waveform.path"
-        case .io: return "arrow.left.arrow.right"
-        case .tools: return "wrench.and.screwdriver"
+        case .cpu: return "cpu"
+        case .gpu: return "square.stack.3d.up"
+        case .disk: return "internaldrive"
         case .network: return "network"
-        case .memory: return "memorychip"
+        case .output: return "text.bubble"
+        }
+    }
+}
+
+/// Stable configuration IDs; every channel uses the selected skin's geometry.
+enum WaveSkin: String, CaseIterable {
+    case bars, plasma, aurora, radar, curve, dots
+
+    var title: String {
+        switch self {
+        case .bars: return "清晰柱形"
+        case .plasma: return "等离子辉光"
+        case .aurora: return "极光柔带"
+        case .radar: return "雷达轮廓"
+        case .curve: return "平滑曲线"
+        case .dots: return "样本端点"
+        }
+    }
+
+    var description: String {
+        switch self {
+        case .bars: return "实柱与细峰帽，便于比较近期活动起伏"
+        case .plasma: return "辉光实柱与圆端点，突出真实活动的峰值"
+        case .aurora: return "连续活动组成柔带，零活动和未知处断开"
+        case .radar: return "细针与空心菱形，保留离散采样的节奏"
+        case .curve: return "细平滑线描绘连续活动，孤立样本显示短线帽"
+        case .dots: return "只画活动样本端点，保留简洁的时间分布"
         }
     }
 }
@@ -114,8 +141,8 @@ struct SkinDefinition {
         self.title = title
         self.light = light
         self.tokens = tokens
-        self.resourceTokens = resourceTokens ?? [.output: tokens[.accent]!, .io: tokens[.error]!, .tools: tokens[.attention]!,
-                                                  .network: tokens[.secondaryAccent]!, .memory: tokens[.text]!]
+        self.resourceTokens = resourceTokens ?? [.cpu: tokens[.accent]!, .disk: tokens[.error]!, .gpu: tokens[.attention]!,
+                                                  .network: tokens[.secondaryAccent]!, .output: tokens[.waiting]!]
         precondition(Set(self.resourceTokens.keys) == Set(ResourceRole.allCases), "Every skin must define every resource channel")
         precondition(self.resourceTokens.values.allSatisfy { $0 <= 0xFFFFFF }, "Resource colors must be opaque RGB tokens")
         self.defaultWaveStyle = defaultWaveStyle
@@ -130,7 +157,7 @@ struct SkinDefinition {
             .running: 0x3DD9FF, .waiting: 0x57FFB2,
             .attention: 0xF4CD73, .error: 0xFF708C,
             .unknown: 0xBD9AEF, .offline: 0x7F8EA5
-        ], defaultWaveStyle: "plasma", resourceTokens: [.output: 0x63D9FF, .io: 0xFF91B5, .tools: 0xFFD187, .network: 0xB99CFF, .memory: 0x7CE3C0]),
+        ], defaultWaveStyle: "plasma", resourceTokens: [.cpu: 0x63D9FF, .disk: 0xFF91B5, .gpu: 0xFFD187, .network: 0xB99CFF, .output: 0x73E7C2]),
         SkinDefinition(id: "aurora", title: "极光紫", light: false, tokens: [
             .base: 0x100B20, .surface: 0x20132F,
             .accent: 0xBD9CFF, .secondaryAccent: 0xF38AC5,
@@ -138,7 +165,7 @@ struct SkinDefinition {
             .running: 0xBD9CFF, .waiting: 0x83E7BE,
             .attention: 0xF7CF79, .error: 0xFF8FAE,
             .unknown: 0xCFAC91, .offline: 0xA29AAF
-        ], defaultWaveStyle: "aurora", defaultWaveLineWidth: 1.2, resourceTokens: [.output: 0x86D6FF, .io: 0xFF9DA6, .tools: 0xF3C57D, .network: 0xCE9EFF, .memory: 0x84DBC7]),
+        ], defaultWaveStyle: "aurora", defaultWaveLineWidth: 1.2, resourceTokens: [.cpu: 0x86D6FF, .disk: 0xFF9DA6, .gpu: 0xF3C57D, .network: 0xCE9EFF, .output: 0x7BE1C4]),
         SkinDefinition(id: "graphite", title: "石墨黑", light: false, tokens: [
             .base: 0x101215, .surface: 0x1C2025,
             .accent: 0x88C5D6, .secondaryAccent: 0xC0A9DA,
@@ -146,7 +173,7 @@ struct SkinDefinition {
             .running: 0x88C5D6, .waiting: 0x9CD4B2,
             .attention: 0xE2CB8B, .error: 0xE58D9C,
             .unknown: 0xB9A1CA, .offline: 0x8C96A3
-        ], defaultWaveStyle: "radar", defaultWaveLineWidth: 0.9, resourceTokens: [.output: 0x8FCFE5, .io: 0xE8A0AB, .tools: 0xDBC084, .network: 0xC9AEEC, .memory: 0x9ACDBA]),
+        ], defaultWaveStyle: "radar", defaultWaveLineWidth: 0.9, resourceTokens: [.cpu: 0x8FCFE5, .disk: 0xE8A0AB, .gpu: 0xDBC084, .network: 0xC9AEEC, .output: 0x9ACDB7]),
         SkinDefinition(id: "daylight", title: "晴空浅色", light: true, tokens: [
             .base: 0xEDF2FA, .surface: 0xFFFFFF,
             .accent: 0x136FBA, .secondaryAccent: 0x7856C7,
@@ -154,7 +181,7 @@ struct SkinDefinition {
             .running: 0x136FBA, .waiting: 0x087A4F,
             .attention: 0x8A6600, .error: 0xC52B45,
             .unknown: 0x79559A, .offline: 0x59697D
-        ], defaultWaveStyle: "curve", defaultWaveLineWidth: 1.2, resourceTokens: [.output: 0x136FBA, .io: 0xB44860, .tools: 0x946000, .network: 0x7951C2, .memory: 0x24775E])
+        ], defaultWaveStyle: "curve", defaultWaveLineWidth: 1.2, resourceTokens: [.cpu: 0x136FBA, .disk: 0xB44860, .gpu: 0x946000, .network: 0x7951C2, .output: 0x0A8065])
     ]
 }
 
@@ -272,14 +299,16 @@ struct PaletteResolver {
 /// ask for purpose-based colors rather than owning their own state palettes.
 enum ThemePalette {
     private static var resolver = PaletteResolver(theme: "neon", statusStyle: "theme")
+    private(set) static var currentWaveStyle = "theme"
     static let names = SkinDefinition.all.map(\.id)
     static let titles = SkinDefinition.all.map(\.title)
     static var current: String { resolver.skin.id }
     static var light: Bool { resolver.skin.light }
     static var scheme: ColorScheme { light ? .light : .dark }
 
-    static func configure(theme: String, statusStyle: String) {
+    static func configure(theme: String, statusStyle: String, waveStyle: String = "theme") {
         resolver = PaletteResolver(theme: theme, statusStyle: statusStyle)
+        currentWaveStyle = waveStyle
     }
 
     static func ns(_ role: ThemeRole) -> NSColor { resolver.ns(role) }

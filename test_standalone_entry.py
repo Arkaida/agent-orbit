@@ -85,7 +85,7 @@ class StandaloneEntryTests(unittest.TestCase):
 
     def test_packaged_engine_contains_attach_entry_points_and_import_dependencies(self):
         for name in ('codex-remote', 'agent-orbit', 'agent_orbit_cli.py',
-                     'configuration.py', 'remote_bundle.py', 'resource_probe.py', 'remote_probe.py'):
+                     'configuration.py', 'process_snapshot.py', 'remote_bundle.py', 'resource_probe.py', 'remote_probe.py'):
             self.assertTrue((self.engine / name).is_file(), name)
         self.assertFalse((self.engine / 'settings.json').exists())
         self.assertFalse((self.engine / 'follow.json').exists())

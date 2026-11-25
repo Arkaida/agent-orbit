@@ -9,12 +9,25 @@ import select
 import subprocess
 import sys
 import time
+from process_snapshot import ProcessSnapshot, as_snapshot
 from resource_probe import AsyncProcessResources
 
 PROMPT = re.compile(r'^\s*[›»]\s*(.*)$')
-RUNNING = re.compile(r'^\s*(?:[•●◦]\s*)?.*\([^\n]*esc to interrupt\)', re.I)
+# Codex appends live terminal counts and shortcuts outside the timer brackets.
+# Only known UI items (or the final item's clipped prefix) may follow them;
+# arbitrary quoted prose after an interrupt example is not a live footer.
+_CODEX_STATUS_HINTS = ('/ps to view', '/stop to close', 'ctrl+b to run in background')
+_CODEX_BACKGROUND_HINTS = ('background terminal running', 'background terminals running')
+_CODEX_STATUS_ITEM = r'(?:\d+\s+background terminals?(?: running)?|' + '|'.join(re.escape(x) for x in _CODEX_STATUS_HINTS) + r')'
+_CODEX_STATUS_PREFIX = (r'(?:\d+\s+(?:' + '|'.join(sorted({re.escape(x[:n]) for x in _CODEX_BACKGROUND_HINTS for n in range(3, len(x) + 1)}, key=len, reverse=True)) + r')|'
+                        + '|'.join(sorted({re.escape(x[:n]) for x in _CODEX_STATUS_HINTS for n in range(3, len(x) + 1)}, key=len, reverse=True)) + r')')
+RUNNING = re.compile(r'^\s*(?:[•●◦]\s*)?(?:Working|Thinking|Running|Compacting(?: context)?)\s*'
+                     + r'\(\s*(?:\d+(?:\.\d+)?(?:ms|[hms])\s*)+[·•]\s*esc to interrupt\b[^)\n]*\)'
+                     + r'(?:\s*[·•]\s*' + _CODEX_STATUS_ITEM + r')*'
+                     + r'(?:\s*[·•]\s*' + _CODEX_STATUS_PREFIX + r'(?:…|\.{3})?)?\s*$', re.I)
 RECOVERING = re.compile(r'^\s*[•●◦]\s*(?:Reconnecting|Retrying|重新连接|重试)(?:\.{1,3})?(?:\s|$)', re.I)
 FOOTER = re.compile(r'\bGPT[- ]|\bMain \[|\? for shortcuts|Goal (?:paused|stalled)|warnings? · f2', re.I)
+CODEX_FOOTER = re.compile(r'^\s*(?:\? for shortcuts\s*|GPT[- ][^\n]*[·•][^\n]*|[^\n]*\bMain \[[^\]]+\][^\n]*)$', re.I)
 EMPTY_ISSUE = dict(error_summary='', error_signature='', error_kind='', attention_level='')
 CLAUDE_PROMPT = re.compile(r'^\s*❯\s*(.*)$')
 CLAUDE_WORKING = re.compile(r'^\s*(?:[✢✳✶✻✽✱⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏]\s+.*(?:…|\.\.\.|esc to interrupt|ctrl\+c to interrupt)|[^\w\s]\s+.*(?:…|\.\.\.).*\([^)]*(?:\d+(?:\.\d+)?(?:h|m|s)\b|\d+(?:\.\d+)?k?\s+tokens\b|(?:esc|ctrl\+c) to interrupt))', re.I)
@@ -93,17 +106,75 @@ def detect_failure(lines, running, scrolled):
     return issue(summary)
 
 
-def analyse_screen(screen, command='codex', dead=False, codex_alive=None, process_state='', exit_status='', in_mode=False, process_check=True):
+def visible_dialogue(screen, agent, history=False):
+    """Observe explicit assistant blocks, excluding input and terminal chrome.
+
+    Tool-call headers and their ambiguous continuations are excluded. This is
+    a bounded visible-text lower bound, never an estimate from log bytes or
+    token counters. Unknown layouts remain unavailable.
+    """
+    prompt = CLAUDE_PROMPT if agent == 'claude' else PROMPT
+    tool = re.compile(r'^(?:Ran\b|Running\b|Explored\b|Searched\b|Edited\b|Added\b|Deleted\b|Updated\b|'
+                      r'(?:Bash|Read|Write|Edit|Grep|Glob|Task|Agent|Workflow|WebFetch|WebSearch)\s*\(|mcp__)')
+    lines = screen.splitlines()
+    end = next((index for index in range(len(lines) - 1, max(-1, len(lines) - 16), -1) if prompt.match(lines[index])), None)
+    body, mode, known = [], '', False
+    for line in lines[:end] if end is not None else lines:
+        stripped = line.strip()
+        if prompt.match(line):
+            mode = 'user'
+            continue
+        if (RUNNING.match(line) or RECOVERING.match(line) or CLAUDE_WORKING.match(line)
+                or re.match(r'^\s*[✢✳✶✻✽✱].*\bdone\b', line, re.I)
+                or re.match(r'^\s*(?:Worked for\b|[─━]{3,}|\+\s*(?:Show details\b|\d+\s+(?:more\s+)?lines?\b)|'
+                            r'(?:⎿\s*)?Tip:\s+Use /btw\b|⏵⏵|✔ Update installed\b|Back to bottom\b|'
+                            r'Jump to bottom\b|Queued follow-up inputs\b|\?\s+\d+\s+questions?\b|shift\+.*to answer|'
+                            r'\d+% until auto-compact\b|\* Waiting for \d+ background agents? to finish\b)', line, re.I)):
+            continue
+        marker = re.match(r'^[•●◦]\s+(.*)$', line)
+        if marker:
+            content = marker.group(1)
+            mode = 'tool' if tool.match(content) else 'assistant'
+            known = True
+            if mode == 'assistant' and content.strip():
+                body.append(content)
+            continue
+        if mode == 'assistant' and stripped:
+            body.append(line)
+    return dict(dialogue_text='\n'.join(body)[-16384:], dialogue_source='assistant_screen',
+                dialogue_identity='terminal:' + agent, dialogue_available=bool(known and end is not None and not history),
+                dialogue_complete=False, dialogue_sample_id=str(time.monotonic_ns()))
+
+
+def analyse_screen(screen, command='codex', dead=False, codex_alive=None, process_state='', exit_status='', in_mode=False, process_check=True, dialogue_context=None):
     lines = screen.splitlines()
     # Input is below the transcript, directly above the model/footer. Never
     # interpret an arbitrary transcript mention of "approval" as an approval UI.
     prompt_index = None
-    for i in range(len(lines) - 1, max(-1, len(lines) - 16), -1):
-        if PROMPT.match(lines[i]) and (any(FOOTER.search(x) for x in lines[i + 1:]) or i >= len(lines) - 5):
+    for i in range(len(lines) - 1, -1, -1):
+        if PROMPT.match(lines[i]) and (any(CODEX_FOOTER.fullmatch(x) for x in lines[i + 1:]) or i >= len(lines) - 5):
             prompt_index = i
             break
     tail = lines[max(0, len(lines) - 16):]
-    running = next((x.strip() for x in reversed(tail) if RUNNING.match(x) or RECOVERING.match(x)), '')
+    # Drafts may span most of the viewport and quote interrupt hints. A live
+    # status belongs above the current input, never inside the draft itself.
+    status_end = prompt_index if prompt_index is not None else len(lines)
+    # Completed code fences are examples or tool output. An unfinished fence
+    # during streaming must not hide the live footer rendered beneath it.
+    fenced_lines, fence = set(), None
+    for index, line in enumerate(lines[:status_end]):
+        marker = re.match(r'^\s*(`{3,}|~{3,})(.*)$', line)
+        if not marker:
+            continue
+        token, rest = marker.groups()
+        if fence is None:
+            fence = (token[0], len(token), index)
+        elif token[0] == fence[0] and len(token) >= fence[1] and not rest.strip():
+            fenced_lines.update(range(fence[2], index + 1))
+            fence = None
+    status_lines = [line for index, line in enumerate(lines[max(0, status_end - 16):status_end], max(0, status_end - 16))
+                    if index not in fenced_lines]
+    running = next((x.strip() for x in reversed(status_lines) if RUNNING.match(x) or RECOVERING.match(x)), '')
     codex = codex_alive is True or command == 'codex' or any(re.search(r'GPT[- ]|Ask Codex to do anything', x, re.I) for x in tail)
     approval_lines = [(i, x) for i, x in enumerate(lines[-40:])
                       if re.search(r'^\s*(?:Would you like to (?:run|allow|make|apply|proceed)|Do you want to (?:run|allow|make|apply|proceed)|Allow .+\?|Approve .+\?|需要批准|等待批准)', x, re.I)]
@@ -172,11 +243,12 @@ def analyse_screen(screen, command='codex', dead=False, codex_alive=None, proces
         if re.search(r'^Worked for |background terminals? running|^└ Tip:|Back to bottom|Queued follow-up inputs|^\?\s+\d+\s+questions?\b|^shift\+.*to answer', s, re.I):
             continue
         body.append(s)
-    return dict(state=state, status=status, working=running, preview=body[-3:], activity='\n'.join(body[-3:]), **failure)
+    return dict(state=state, status=status, working=running, preview=body[-3:], activity='\n'.join(body[-3:]),
+                **visible_dialogue(dialogue_context if dialogue_context is not None else screen, 'codex', scrolled), **failure)
 
 
 def analyse_claude_screen(screen, command='claude', dead=False, agent_alive=None,
-                         process_state='', exit_status='', in_mode=False, process_check=True):
+                         process_state='', exit_status='', in_mode=False, process_check=True, dialogue_context=None):
     lines = screen.splitlines()
     tail = lines[-24:]
     prompt = next((i for i in range(len(lines) - 1, max(-1, len(lines) - 16), -1)
@@ -273,7 +345,8 @@ def analyse_claude_screen(screen, command='claude', dead=False, agent_alive=None
             and not re.search(r'^\s*[─━]+|bypass permissions on|shift\+tab to cycle|until auto-compact|^\s*[✢✳✶✻✽✱].*\bdone\b|^\s*✔ Update installed', x, re.I)]
     progress = '|'.join(re.findall(r'\d+\s*/\s*\d+', '\n'.join(tail))) if workflows else ''
     return dict(state=state, status=status, working=working, preview=body[-3:], activity='\n'.join(body[-3:]),
-                background_workflows=workflows, background_ui_agents=ui_agents, background_progress=progress, **failure)
+                background_workflows=workflows, background_ui_agents=ui_agents, background_progress=progress,
+                **visible_dialogue(dialogue_context if dialogue_context is not None else screen, 'claude', scrolled), **failure)
 
 
 def read_processes():
@@ -281,8 +354,8 @@ def read_processes():
         result = subprocess.run(['ps', '-eo', 'pid=,ppid=,stat=,comm='], text=True, capture_output=True, timeout=2)
         if result.returncode:
             return None
-        return {int(p): (int(parent), state, name) for p, parent, state, name in
-                (line.split(None, 3) for line in result.stdout.splitlines() if line.strip())}
+        return ProcessSnapshot({int(p): (int(parent), state, name) for p, parent, state, name in
+                                (line.split(None, 3) for line in result.stdout.splitlines() if line.strip())})
     except (OSError, ValueError, subprocess.TimeoutExpired):
         return None
 
@@ -291,9 +364,7 @@ def find_codex(processes, root_pid):
     if processes is None:
         return None, ''
     # Choose the nearest Codex descendant, never a subagent under that process.
-    children = {}
-    for pid, (parent, state, name) in processes.items():
-        children.setdefault(parent, []).append(pid)
+    processes = as_snapshot(processes)
     pending, seen = [root_pid], set()
     while pending:
         pid = pending.pop(0)
@@ -303,33 +374,14 @@ def find_codex(processes, root_pid):
         entry = processes.get(pid)
         if entry and os.path.basename(entry[2]) == 'codex' and 'Z' not in entry[1]:
             return pid, entry[1]
-        pending.extend(children.get(pid, []))
+        pending.extend(processes.children.get(pid, ()))
     return 0, ''
 
 
 def find_agent(processes, root_pid):
     if processes is None:
         return None, '', ''
-    children = {}
-    for pid, (parent, state, name) in processes.items():
-        children.setdefault(parent, []).append(pid)
-    pending, seen, stopped = [root_pid], set(), []
-    while pending:
-        pid = pending.pop(0)
-        if pid in seen:
-            continue
-        seen.add(pid)
-        entry = processes.get(pid)
-        if entry:
-            agent = os.path.basename(entry[2])
-            if agent in ('codex', 'claude') and 'Z' not in entry[1]:
-                if not re.search('[Tt]', entry[1]):
-                    return pid, entry[1], agent
-                stopped.append((pid, entry[1], agent))
-                # A nested worker is not the foreground root agent.
-                continue
-        pending.extend(children.get(pid, []))
-    return stopped[0] if stopped else (0, '', '')
+    return as_snapshot(processes).find_agent(root_pid)
 
 
 class UsageLogWatcher:
@@ -929,14 +981,57 @@ class ResultLogWatcher:
 
 
 class RolloutWatcher:
-    """Read only new lifecycle events from an unambiguous CLI root log.
+    """Recover Codex state and read new alerts from an unambiguous CLI root log.
 
     No session-directory scans or cwd guesses: map logs through open process
-    descriptors, reject subagents, and skip existing history on first contact.
+    descriptors, reject subagents, and never replay alerts on first contact.
     """
     def __init__(self):
         self.roots, self.files = {}, {}
         self.cursors = {}
+
+    recover_initial_lifecycle = True
+
+    def tail_lifecycle(self, path, key, size):
+        """Recover only current Codex state from a bounded, verified root tail.
+
+        No historical error records become alert events. An unobserved gap
+        without a complete lifecycle boundary cannot inherit an earlier state.
+        """
+        if not self.recover_initial_lifecycle:
+            return '', b''
+        try:
+            with open(path, 'rb') as log:
+                current = os.fstat(log.fileno())
+                if (current.st_dev, current.st_ino) != key or current.st_size < size:
+                    return '', b''
+                start = max(0, size - 1048576)
+                partial_start = False
+                if start:
+                    log.seek(start - 1)
+                    partial_start = log.read(1) != b'\n'
+                log.seek(start)
+                data = log.read(size - start)
+            lines = data.split(b'\n')
+            if partial_start:
+                lines.pop(0)  # A boundary before the tail is not observable.
+            if lines and lines[-1].strip():
+                # A writer may be halfway through a new boundary; wait for its
+                # next complete record rather than recover an obsolete state.
+                return '', lines[-1]
+            last = ''
+            for line in lines:
+                if not line.strip():
+                    continue
+                try:
+                    decoded = self.decode(json.loads(line))
+                    if decoded is not None:
+                        last = decoded[0]
+                except (ValueError, TypeError, AttributeError):
+                    last = ''
+            return last, b''
+        except OSError:
+            return '', b''
 
     def decode(self, item):
         payload = item.get('payload', {})
@@ -982,15 +1077,21 @@ class RolloutWatcher:
                 resumed = (cursor or {}).get('path') == path and (cursor or {}).get('device') == info.st_dev and (cursor or {}).get('inode') == info.st_ino
                 offset = max(0, min(info.st_size, int((cursor or {}).get('offset', info.st_size)))) if resumed else info.st_size
                 saved = dict(key=key, offset=offset, buffer=b'', events=[], last_type='', retry_signature='')
+                saved['last_type'], saved['buffer'] = self.tail_lifecycle(path, key, offset)
                 self.files[path] = saved
                 if not resumed:
                     if len(self.files) > 100:
                         self.files = {path: self.files[path]}
-                    return [], ''
+                    return [], saved['last_type']
             if saved['key'] != key or info.st_size < saved['offset']:
                 saved = dict(key=key, offset=info.st_size, buffer=b'', events=[], last_type='', retry_signature='')
                 self.files[path] = saved
-                return [], ''
+                saved['last_type'], saved['buffer'] = self.tail_lifecycle(path, key, info.st_size)
+                return [], saved['last_type']
+            if self.recover_initial_lifecycle and info.st_size - saved['offset'] > 1048576:
+                saved.update(offset=info.st_size, buffer=b'', last_type='', retry_signature='')
+                saved['last_type'], saved['buffer'] = self.tail_lifecycle(path, key, info.st_size)
+                return list(saved['events']), saved['last_type']
             with open(path, 'rb') as log:
                 # Bound work per snapshot, including exceptionally large tool output.
                 if info.st_size - saved['offset'] > 1048576:
@@ -1057,6 +1158,7 @@ class RolloutWatcher:
 
 class ClaudeWatcher(RolloutWatcher):
     """Map one root Claude process to its own session, never another chat."""
+    recover_initial_lifecycle = False
     def root_log(self, pid, now):
         cached = self.roots.get(pid)
         if cached and now - cached[0] < 2:
@@ -1128,8 +1230,310 @@ class ClaudeBackgroundWatcher:
     Unlike lifecycle alerts, existing launch/completion records are replayed
     on startup to reconstruct tasks that outlive the foreground turn.
     """
-    def __init__(self):
+    def __init__(self, clock=time.monotonic, activity_seconds=8.0, max_activity_gap=5.0):
         self.files = {}
+        self.clock = clock
+        self.activity_seconds = max(1.0, min(30.0, activity_seconds))
+        self.max_activity_gap = max(1.0, max_activity_gap)
+
+    def output_activity(self, saved, now, ready):
+        """Only continuous growth of a task's own output is new progress.
+
+        An old launch can survive the foreground turn, but its retained file
+        is not evidence of work. Replays, file replacement, missing reads and
+        long observation gaps establish a new baseline instead of activity.
+        """
+        previous = saved.get('output_samples', {})
+        last = saved.get('output_sample_time')
+        continuous = (ready and saved.get('output_sample_ready') and last is not None
+                      and 0 < now - last <= self.max_activity_gap)
+        samples, active_keys, count, total_size = {}, set(), 0, 0
+        activity = saved.setdefault('terminal_activity', {})
+        for task_id, task in saved['active'].items():
+            outputs = list(task['outputs'])
+            if task['kind'] == 'workflow' and task.get('transcript_dir'):
+                try:
+                    with os.scandir(task['transcript_dir']) as entries:
+                        for index, entry in enumerate(entries):
+                            if index >= 64:
+                                break
+                            if entry.name.endswith('.jsonl') and entry.is_file(follow_symlinks=False):
+                                outputs.append(entry.path)
+                except OSError:
+                    pass
+            for output in dict.fromkeys(outputs):
+                if count >= 128:
+                    break
+                count += 1
+                key = (task_id, output)
+                try:
+                    info = os.stat(output)
+                except OSError:
+                    continue
+                identity = (info.st_dev, info.st_ino)
+                size = max(0, info.st_size)
+                samples[key] = (identity, size)
+                total_size += size
+                prior = previous.get(key)
+                same = continuous and prior is not None and identity == prior[0] and size >= prior[1]
+                if same and size > prior[1]:
+                    saved['output_observed_bytes'] = saved.get('output_observed_bytes', 0) + size - prior[1]
+                if task['kind'] == 'terminal':
+                    if same:
+                        active_keys.add(key)
+                        if size > prior[1]:
+                            activity.setdefault(task_id, {}).setdefault('outputs', {})[key] = now
+        # Losing/replacing a file must not retain its previous activity proof.
+        for task_id, evidence in list(activity.items()):
+            if task_id not in saved['active']:
+                activity.pop(task_id, None)
+                continue
+            evidence['outputs'] = {key: stamp for key, stamp in evidence.get('outputs', {}).items()
+                                   if key in active_keys}
+        saved.update(output_samples=samples, output_sample_time=now, output_sample_ready=ready)
+        return total_size
+
+    def activity_summary(self, saved, now):
+        active, session_processes, sources, ages = 0, 0, set(), []
+        for task_id, evidence in saved.get('terminal_activity', {}).items():
+            if saved['active'].get(task_id, {}).get('kind') != 'terminal':
+                continue
+            signals = [('output', stamp) for stamp in evidence.get('outputs', {}).values()]
+            signals += list(evidence.get('process_signals', {}).items())
+            recent = [(source, now - stamp) for source, stamp in signals
+                      if 0 <= now - stamp <= self.activity_seconds]
+            if recent:
+                active += 1
+                sources.update(source for source, _ in recent)
+                ages.extend(age for _, age in recent)
+        for evidence in saved.get('session_activity', {}).values():
+            recent = [(source, now - stamp) for source, stamp in evidence.get('signals', {}).items()
+                      if 0 <= now - stamp <= self.activity_seconds]
+            if recent:
+                session_processes += 1
+                sources.update(source for source, _ in recent)
+                ages.extend(age for _, age in recent)
+        return dict(background_active_terminals=active,
+                    background_active_session_processes=session_processes,
+                    background_activity_age=round(min(ages), 3) if ages else None,
+                    background_activity_source=next(iter(sources)) if len(sources) == 1 else 'mixed' if sources else '',
+                    background_activity_sources=sorted(sources),
+                    background_output_observed_bytes=saved.get('output_observed_bytes', 0))
+
+    @staticmethod
+    def activity_number(value):
+        return value if isinstance(value, (int, float)) and not isinstance(value, bool) and 0 <= value < float('inf') else None
+
+    def remember_process_activity(self, saved):
+        watches = saved.setdefault('process_watches', {})
+        observations = []
+        for task_id, evidence in saved.get('terminal_activity', {}).items():
+            if task_id in saved['active']:
+                observations.extend((('task', task_id, row['pid'], row['start']), row, evidence.get('process_signals', {}))
+                                    for row in evidence.get('process_rows', []))
+        observations.extend((('session', '', pid, start), evidence.get('row', {}), evidence.get('signals', {}))
+                            for (pid, start), evidence in saved.get('session_activity', {}).items())
+        for key, row, signals in observations:
+            for source, stamp in signals.items():
+                value = (self.activity_number(row.get('cpu_percent')) if source == 'cpu' else
+                         self.activity_number(row.get('gpu_utilization_percent')) if source == 'gpu' else
+                         sum(self.activity_number(row.get(field)) or 0 for field in ('disk_read_per_second', 'disk_write_per_second')))
+                if value is not None and value > 0:
+                    record = watches.setdefault(key, {})
+                    record[source] = max(record.get(source, -float('inf')), stamp)
+
+    def process_observation_missing(self, saved, rows, now, discovery=None, complete=False):
+        """A resource gap cannot finish previously confirmed background work."""
+        watches = saved.setdefault('process_watches', {})
+        for key, signals in list(watches.items()):
+            kind, task_id, pid, _ = key
+            if kind == 'task' and task_id not in saved['active']:
+                watches.pop(key, None)
+                continue
+            row = rows.get(pid) if rows is not None else None
+            exited = discovery is not None and (pid not in discovery or 'Z' in discovery.get(pid, (0, ''))[1])
+            if rows is not None and row is None and (exited
+                                                     or discovery is None and complete):
+                watches.pop(key, None)  # Fresh complete coverage confirms exit.
+                continue
+            if row is None:
+                continue
+            cpu = self.activity_number(row.get('cpu_percent'))
+            disk = [self.activity_number(row.get(field)) for field in ('disk_read_per_second', 'disk_write_per_second')]
+            gpu = self.activity_number(row.get('gpu_utilization_percent'))
+            gpu_age = self.activity_number(row.get('gpu_sample_age_seconds'))
+            quiet = dict(cpu=cpu is not None and cpu < 3,
+                         disk=all(value is not None for value in disk) and sum(disk) < 4096,
+                         gpu=row.get('gpu_available') is True and gpu_age is not None and gpu_age <= 3 and gpu == 0)
+            for source, stamp in list(signals.items()):
+                if quiet.get(source, False) and now - stamp > self.activity_seconds:
+                    signals.pop(source, None)
+            if not signals:
+                watches.pop(key, None)
+        summary = self.activity_summary(saved, now)
+        return bool(watches) and not (summary['background_active_terminals'] or summary['background_active_session_processes'])
+
+    def session_process_activity(self, saved, processes, now, capture_time, continuous, duplicate):
+        """Read explicit same-session associations without requiring a live tool.
+
+        The resource collector validates the UID, exact Claude session context
+        and process start identity for these rows. Their presence or allocated
+        GPU memory alone never becomes work; only new execution samples do.
+        """
+        previous = saved.get('session_activity', {})
+        current = {}
+        for row in processes.values():
+            if row.get('association') != 'claude_session_env':
+                continue
+            identity = (row['pid'], row['start'])
+            evidence = previous.get(identity)
+            if evidence is None or not continuous and not duplicate:
+                evidence = dict(signals={}, cpu_streak=0, gpu_sample=None, checking=False)
+            current[identity] = evidence
+            evidence['row'] = row
+            if duplicate:
+                continue
+            cpu = self.activity_number(row.get('cpu_percent'))
+            evidence['cpu_streak'] = evidence['cpu_streak'] + 1 if continuous and cpu is not None and cpu >= 3 else 0
+            if evidence['cpu_streak'] >= 2:
+                evidence['signals']['cpu'] = capture_time
+            gpu_age = self.activity_number(row.get('gpu_sample_age_seconds'))
+            gpu = self.activity_number(row.get('gpu_utilization_percent'))
+            gpu_id = row.get('gpu_sample_id')
+            gpu_observed = row.get('gpu_available') is True and gpu_age is not None and gpu_age <= 3 and gpu is not None and gpu_id is not None
+            if (continuous and gpu_observed and evidence.get('gpu_sample') is not None
+                    and evidence['gpu_sample'] != gpu_id and gpu > 0):
+                evidence['signals']['gpu'] = capture_time - gpu_age
+            evidence['gpu_sample'] = gpu_id if gpu_observed else None
+            candidate = cpu is not None and cpu >= 3 or gpu_observed and gpu > 0
+            evidence['checking'] = bool(candidate and not any(0 <= now - stamp <= self.activity_seconds
+                                                              for stamp in evidence['signals'].values()))
+        # Missing/reused PIDs lose their previous evidence immediately. The
+        # count denotes active processes, never a guessed number of jobs.
+        saved['session_activity'] = current
+        return len(current), any(evidence['checking'] for evidence in current.values())
+
+    def with_process_activity(self, path, background, resources, now=None, root_pid=None, processes=None):
+        """Supplement task progress only through an exact output-file binding.
+
+        Claude's overall CPU and retained processes are deliberately excluded.
+        A known task's output inode binds an executing shell; only its verified
+        descendant branch can provide CPU, disk or GPU evidence for that task.
+        """
+        now = self.clock() if now is None else now
+        saved = self.files.get(path)
+        if saved is None:
+            return background
+        self.remember_process_activity(saved)
+        activity = saved.setdefault('terminal_activity', {})
+        resources = resources if isinstance(resources, dict) else {}
+        age = self.activity_number(resources.get('sample_age_seconds', 0))
+        sample_id, epoch = resources.get('sample_id'), resources.get('identity')
+        rows = resources.get('process_activity')
+        fresh = (age is not None and age <= 4 and isinstance(sample_id, int) and not isinstance(sample_id, bool)
+                 and isinstance(epoch, str) and bool(epoch) and isinstance(rows, list))
+        if not fresh:
+            for evidence in activity.values():
+                evidence.update(process_signals={}, cpu_streak=0, disk_streak=0, process_checking=False)
+            saved['process_sample'] = None
+            saved['session_activity'] = {}
+            return dict(background, background_bound_terminals=0, background_process_observable=False,
+                        background_process_checking=False, background_bound_session_processes=0,
+                        background_process_unobserved=self.process_observation_missing(saved, None, now),
+                        **self.activity_summary(saved, now))
+        discovery = processes
+        processes = {row['pid']: row for row in rows[:128] if isinstance(row, dict)
+                     and isinstance(row.get('pid'), int) and row['pid'] > 0
+                     and isinstance(row.get('parent'), int) and isinstance(row.get('start'), str)}
+        bindings = {}
+        for (task_id, _), (identity, _) in saved.get('output_samples', {}).items():
+            if saved['active'].get(task_id, {}).get('kind') == 'terminal':
+                bindings.setdefault(identity, set()).add(task_id)
+        anchors = {}
+        for pid, row in processes.items():
+            if pid == root_pid:
+                continue
+            for output in row.get('output_files', [])[:2]:
+                if isinstance(output, dict):
+                    anchors.setdefault(pid, set()).update(bindings.get((output.get('device'), output.get('inode')), ()))
+        owned = {}
+        # A nested task's own output binding takes precedence over an outer
+        # shell's branch. Ambiguous identical bindings do not get assigned.
+        for pid, row in processes.items():
+            cursor, seen = pid, set()
+            while cursor in processes and cursor not in seen:
+                seen.add(cursor)
+                if anchors.get(cursor):
+                    if len(anchors[cursor]) == 1:
+                        owned.setdefault(next(iter(anchors[cursor])), []).append(row)
+                    break
+                cursor = processes[cursor]['parent']
+        previous = saved.get('process_sample')
+        capture_time = now - age
+        current = (epoch, sample_id, capture_time)
+        duplicate = previous is not None and previous[:2] == current[:2]
+        continuous = previous is not None and previous[0] == epoch and 0 < capture_time - previous[2] <= self.max_activity_gap
+        session_count, session_checking = self.session_process_activity(saved, processes, now, capture_time, continuous, duplicate)
+        for task_id, task in saved['active'].items():
+            if task['kind'] != 'terminal':
+                continue
+            evidence = activity.setdefault(task_id, {})
+            branch = owned.get(task_id, [])
+            previous_instances = {row['pid']: row['start'] for row in evidence.get('process_rows', [])}
+            reused = any(row['pid'] in previous_instances and previous_instances[row['pid']] != row['start'] for row in branch)
+            evidence['process_rows'] = branch
+            direct = {pid for pid, owners in anchors.items() if owners == {task_id}}
+            # Keep only highest anchors, so children inheriting stdout do not
+            # make an otherwise stable shell binding change every experiment.
+            roots = []
+            for pid in direct:
+                cursor, seen = processes[pid]['parent'], {pid}
+                while cursor in processes and cursor not in seen and cursor not in direct:
+                    seen.add(cursor); cursor = processes[cursor]['parent']
+                if cursor not in direct:
+                    roots.append((pid, processes[pid]['start']))
+            binding = tuple(sorted(roots))
+            same_binding = binding and evidence.get('process_binding') == binding and not reused
+            if not same_binding or not continuous and not duplicate:
+                evidence.update(process_signals={}, cpu_streak=0, disk_streak=0, gpu_samples={}, process_checking=False)
+            evidence['process_binding'] = binding
+            if duplicate or not binding:
+                continue
+            cpu = sum(value for value in (self.activity_number(row.get('cpu_percent')) for row in branch) if value is not None)
+            disk = sum(value for row in branch for value in
+                       (self.activity_number(row.get('disk_read_per_second')), self.activity_number(row.get('disk_write_per_second')))
+                       if value is not None)
+            evidence['cpu_streak'] = evidence.get('cpu_streak', 0) + 1 if same_binding and continuous and cpu >= 3 else 0
+            evidence['disk_streak'] = evidence.get('disk_streak', 0) + 1 if same_binding and continuous and disk >= 4096 else 0
+            signals = evidence.setdefault('process_signals', {})
+            if evidence['cpu_streak'] >= 2:
+                signals['cpu'] = capture_time
+            if evidence['disk_streak'] >= 2:
+                signals['disk'] = capture_time
+            gpu = []
+            for row in branch:
+                gpu_age = self.activity_number(row.get('gpu_sample_age_seconds'))
+                value = self.activity_number(row.get('gpu_utilization_percent'))
+                gpu_id = row.get('gpu_sample_id')
+                if row.get('gpu_available') is True and gpu_age is not None and gpu_age <= 3 and value is not None and gpu_id is not None:
+                    gpu.append((row['pid'], row['start'], gpu_id, value, capture_time - gpu_age))
+            previous_gpu = evidence.get('gpu_samples', {})
+            observed_gpu = [(value, stamp) for pid, start, gid, value, stamp in gpu
+                            if (pid, start) in previous_gpu and previous_gpu[(pid, start)] != gid]
+            if same_binding and continuous and any(value > 0 for value, _ in observed_gpu):
+                signals['gpu'] = max(stamp for value, stamp in observed_gpu if value > 0)
+            evidence['gpu_samples'] = {(pid, start): gid for pid, start, gid, _, _ in gpu}
+            evidence['process_checking'] = bool((cpu >= 3 or disk >= 4096 or any(value > 0 for _, _, _, value, _ in gpu))
+                                                and not any(0 <= now - stamp <= self.activity_seconds for stamp in signals.values()))
+        if not duplicate:
+            saved['process_sample'] = current
+        self.remember_process_activity(saved)
+        unobserved = self.process_observation_missing(saved, processes, now, discovery, resources.get('tree_complete') is True)
+        return dict(background, background_bound_terminals=len(owned), background_process_observable=bool(owned),
+                    background_bound_session_processes=session_count,
+                    background_process_unobserved=unobserved,
+                    background_process_checking=session_checking or any(activity.get(task_id, {}).get('process_checking', False) for task_id in owned),
+                    **self.activity_summary(saved, now))
 
     @staticmethod
     def text(content):
@@ -1210,12 +1614,16 @@ class ClaudeBackgroundWatcher:
                 continue
             if block.get('type') == 'tool_use':
                 name, args, tool_id = block.get('name'), block.get('input') or {}, block.get('id')
+                args = args if isinstance(args, dict) else {}
                 if name in ('Agent', 'Task', 'Bash'):
                     if name in ('Agent', 'Task') and tool_id and tool_id not in saved['tools'] and 'tool:' + tool_id not in saved['completed']:
                         saved['active']['tool:' + tool_id] = dict(kind='agent', outputs=[])
                     saved['tools'][tool_id] = dict(kind='agent' if name in ('Agent', 'Task') else 'terminal', background=bool(args.get('run_in_background')))
                 elif name in ('TaskOutput', 'TaskStop'):
-                    saved['tools'][tool_id] = dict(kind=name, task_id=args.get('task_id'))
+                    saved['tools'][tool_id] = dict(kind=name, task_id=args.get('task_id') or args.get('taskId'))
+                elif tool_id:
+                    saved['tools'][tool_id] = dict(kind='workflow' if name == 'Workflow' else 'unknown', name=name,
+                                                  background=bool(args.get('run_in_background')))
             if block.get('type') != 'tool_result':
                 continue
             tool = saved['tools'].get(block.get('tool_use_id'), {})
@@ -1231,26 +1639,39 @@ class ClaudeBackgroundWatcher:
             # without a run_in_background argument. The result is authoritative;
             # a plain synchronous agentId remains a completed foreground call.
             asynchronous = tool.get('background') or result.get('isAsync') is True or result.get('status') == 'async_launched'
+            task_type = result.get('taskType')
+            workflow = task_type == 'local_workflow' or tool.get('kind') == 'workflow'
+            persistent = result.get('persistent') is True
             task_id = result.get('backgroundTaskId') or (result.get('agentId') if asynchronous else None)
+            if not task_id and (asynchronous or persistent):
+                task_id = result.get('taskId') or result.get('task_id')
             if not task_id and asynchronous:
                 match = re.search(r'(?:agentId|task[_ ]?id|background.{0,15}ID)\s*[:=]\s*([a-zA-Z0-9_-]+)', text, re.I)
                 task_id = match.group(1) if match else None
             if task_id and re.fullmatch(r'[a-zA-Z0-9_-]{1,100}', str(task_id)) and task_id not in saved['completed']:
-                kind = 'terminal' if result.get('backgroundTaskId') else tool.get('kind', 'agent')
+                kind = ('workflow' if workflow else 'terminal' if result.get('backgroundTaskId') or task_type in ('local_bash', 'bash', 'terminal')
+                        else tool.get('kind', 'unknown'))
                 outputs = [p for p in re.findall(r'/(?:private/)?tmp/[^\s<>\"]+\.output', text + '\n' + str(result.get('stdout', '')))
                            if os.path.basename(p) == str(task_id) + '.output']
+                for field in ('outputFile', 'output_file'):
+                    output = result.get(field)
+                    if isinstance(output, str) and os.path.isabs(output) and os.path.basename(output) == str(task_id) + '.output':
+                        outputs.append(output)
                 if kind == 'agent':
                     outputs.append(os.path.join(os.path.dirname(path), 'subagents', 'agent-' + str(task_id) + '.jsonl'))
-                saved['active'][task_id] = dict(kind=kind, outputs=outputs)
+                transcript_dir = result.get('transcriptDir')
+                saved['active'][task_id] = dict(kind=kind, outputs=list(dict.fromkeys(outputs)),
+                                               transcript_dir=transcript_dir if workflow and isinstance(transcript_dir, str) and os.path.isabs(transcript_dir) else None)
             nested = result.get('task') or {}
             if not isinstance(nested, dict):
                 nested = {}
             terminal_status = result.get('status') or nested.get('status')
             finished = terminal_status in ('completed', 'failed', 'killed', 'stopped', 'cancelled', 'canceled')
-            if task_id and finished:
-                saved['active'].pop(task_id, None); saved['completed'].add(task_id)
+            finished_task = task_id or result.get('taskId') or result.get('task_id')
+            if finished_task and finished:
+                saved['active'].pop(finished_task, None); saved['completed'].add(finished_task)
             if tool.get('kind') in ('TaskOutput', 'TaskStop') and (finished or (tool['kind'] == 'TaskStop' and not block.get('is_error'))):
-                finished_id = tool.get('task_id') or nested.get('task_id')
+                finished_id = tool.get('task_id') or nested.get('task_id') or nested.get('taskId')
                 if finished_id:
                     saved['active'].pop(finished_id, None); saved['completed'].add(finished_id)
         # Completion can be queued before Claude starts another foreground turn.
@@ -1270,7 +1691,10 @@ class ClaudeBackgroundWatcher:
     def read_path(self, path):
         if not path:
             return dict(background_count=0, background_agents=0, background_terminals=0, background_checking=False,
-                        background_observable=False, background_output_bytes=0, background_revision=0, foreground_running=None)
+                        background_observable=False, background_output_bytes=0, background_revision=0, foreground_running=None,
+                        background_active_terminals=0, background_active_session_processes=0,
+                        background_activity_age=None, background_activity_source='',
+                        background_activity_sources=[], background_output_observed_bytes=0)
         try:
             info = os.stat(path); key = (info.st_dev, info.st_ino)
             saved = self.files.get(path)
@@ -1320,36 +1744,40 @@ class ClaudeBackgroundWatcher:
             if claude_foreground and complete:
                 saved['foreground_observable'] = True
             active = list(saved['active'].values())
-            output_bytes = 0
-            for task in active:
-                for output in task['outputs']:
-                    try:
-                        output_bytes += os.stat(output).st_size
-                    except OSError:
-                        pass
+            now = self.clock()
+            output_bytes = self.output_activity(saved, now, complete)
             if len(self.files) > 100:
                 self.files = {path: saved}
             return dict(background_count=len(active), background_agents=sum(x['kind'] == 'agent' for x in active),
                         background_terminals=sum(x['kind'] == 'terminal' for x in active),
+                        background_log_workflows=sum(x['kind'] == 'workflow' for x in active),
                         background_checking=not complete if claude_foreground else saved['offset'] < info.st_size,
                         background_observable=not saved['history_error'] if claude_foreground else True,
                         background_output_bytes=output_bytes, background_revision=saved['revision'],
                         foreground_running=saved['foreground'] if not claude_foreground or saved['foreground_observable'] else None,
                         foreground_event=saved.get('foreground_event'),
                         foreground_event_offset=saved.get('foreground_position'),
-                        foreground_observable=saved.get('foreground_observable') if claude_foreground else None)
+                        foreground_observable=saved.get('foreground_observable') if claude_foreground else None,
+                        **self.activity_summary(saved, now))
         except OSError:
             return self.read_path(None)
 
 
 def apply_claude_background(result, background):
     screen_state = result.get('foreground_screen_state', result['state'])
-    workflows = result.get('background_workflows', 0)
+    ui_workflows = result.get('background_workflows', 0)
+    log_workflows = background.get('background_log_workflows', 0)
+    workflows = max(ui_workflows, log_workflows)
     ui_agents = result.get('background_ui_agents', 0)
     log_agents = background.get('background_agents', 0)
-    background = dict(background, background_count=background['background_count'] + workflows + max(0, ui_agents - log_agents),
-                      background_agents=max(log_agents, ui_agents))
+    background = dict(background, background_count=background['background_count'] + max(0, ui_workflows - log_workflows) + max(0, ui_agents - log_agents),
+                      background_agents=max(log_agents, ui_agents), background_workflows=workflows)
     result.update(background)
+    result['foreground_input_ready'] = bool(background.get('foreground_observable') is True
+                                            and background.get('foreground_running') is False
+                                            and background.get('foreground_event') == 'turn_complete'
+                                            and result['state'] in ('idle', 'running', 'unknown')
+                                            and not result.get('error_kind'))
     if result['state'] in ('idle', 'running', 'unknown') and not result.get('error_kind'):
         foreground = background.get('foreground_running')
         verified = background.get('foreground_observable') is True
@@ -1363,10 +1791,16 @@ def apply_claude_background(result, background):
             # final answer; that root completion cannot finish its children.
             result.update(state='running', status='子智能体运行中（{}）'.format(background['background_agents']),
                           working='等待 {} 个后台子智能体完成'.format(background['background_agents']))
+        elif background.get('background_active_terminals', 0) or background.get('background_active_session_processes', 0):
+            status = '后台实验运行中' if background.get('background_active_session_processes', 0) else '后台实验运行中（{}）'.format(background['background_active_terminals'])
+            result.update(state='running', status=status,
+                          working='前台可输入，已确认后台任务仍有进展' if result['foreground_input_ready'] else '已确认后台任务仍有进展')
+        elif background.get('background_process_checking'):
+            result.update(state='unknown', status='正在核对后台实验', working='已关联到后台任务，等待连续资源样本')
         elif background['background_checking']:
             if completed or result['state'] != 'running':
                 result.update(state='unknown', status='正在核对后台任务', working='')
-        elif background.get('background_agents', 0) or workflows and not completed:
+        elif background.get('background_agents', 0) or log_workflows or workflows and not completed:
             if workflows and not background.get('background_agents', 0):
                 result.update(state='running', status='后台工作流运行中（{}）'.format(workflows),
                               working='等待 {} 个后台工作流完成'.format(workflows))
@@ -1375,6 +1809,8 @@ def apply_claude_background(result, background):
                               working='等待子智能体完成')
             else:
                 result['status'] = '运行中 · 子智能体 {}'.format(background.get('background_agents', 0)) if not workflows else result['status']
+        elif background.get('background_process_unobserved'):
+            result.update(state='unknown', status='后台状态待核实', working='前台可输入，后台资源采集暂缺失' if result['foreground_input_ready'] else '后台资源采集暂缺失')
         elif completed and workflows:
             # An old visible workflow line cannot overturn a newer root-log
             # completion, but unverified workflow work must not become idle.
@@ -1432,16 +1868,14 @@ def codex_terminal_count(processes, root_pid, read_stat=None):
         root_session, root_tty = read_stat(root_pid)
     except (OSError, ValueError, IndexError):
         return 0, False
-    children = {}
-    for pid, (parent, _, _) in processes.items():
-        children.setdefault(parent, []).append(pid)
-    pending, seen, terminals, complete = list(children.get(root_pid, [])), set(), set(), True
+    processes = as_snapshot(processes)
+    pending, seen, terminals, complete = list(processes.children.get(root_pid, ())), set(), set(), True
     while pending:
         pid = pending.pop()
         if pid in seen:
             continue
         seen.add(pid)
-        pending.extend(children.get(pid, []))
+        pending.extend(processes.children.get(pid, ()))
         entry = processes.get(pid)
         if not entry or 'Z' in entry[1] or re.search('[Tt]', entry[1]):
             continue
@@ -1571,28 +2005,54 @@ def snapshot(socket, selected):
             raise RuntimeError(p.stderr.strip() or 'tmux 读取失败')
         return p.stdout
     started = time.monotonic()
-    fields = '#{session_name}\t#{window_index}\t#{pane_index}\t#{pane_id}\t#{pane_current_command}\t#{pane_current_path}\t#{pane_dead}\t#{pane_pid}\t#{pane_dead_status}\t#{pane_in_mode}'
-    processes = read_processes()
-    panes = []
+    fields = '#{session_name}\t#{window_index}\t#{pane_index}\t#{pane_id}\t#{pane_current_command}\t#{pane_current_path}\t#{pane_dead}\t#{pane_pid}\t#{pane_dead_status}\t#{pane_in_mode}\t#{pane_height}'
+    processes = as_snapshot(read_processes())
+    panes, listed, owners, roots, claude_paths, session_contexts, pane_heights = [], [], {}, {}, {}, {}, {}
     for line in tmux('list-panes', '-a', '-F', fields).splitlines():
         bits = line.split('\t')
-        if len(bits) != 10:
+        if len(bits) not in (10, 11):
             continue
+        if len(bits) == 11:
+            try:
+                height = int(bits.pop())
+                if 1 <= height <= 4096:
+                    pane_heights[bits[3]] = height
+            except ValueError:
+                continue
+        session, window, pane, pane_id, command, cwd, dead, root_pid, exit_status, in_mode = bits
+        try:
+            pane_root = int(root_pid)
+        except ValueError:
+            continue
+        if pane_root not in roots:
+            roots[pane_root] = find_agent(processes, pane_root)
+        process = roots[pane_root]
+        if process[0]:
+            owners.setdefault(process[0], set()).add(session)
+        listed.append((bits, process))
+    # All listed owners count, even when only one of their sessions is watched.
+    # Listing metadata does not capture unselected screens or open their logs.
+    for bits, process in listed:
         session, window, pane, pane_id, command, cwd, dead, root_pid, exit_status, in_mode = bits
         if selected and session not in selected:
             continue
         try:
-            screen = tmux('capture-pane', '-p', '-t', pane_id)
+            height = pane_heights.get(pane_id)
+            # One bounded capture retains assistant anchors above a small
+            # viewport. Only current rows drive state, errors and UI preview.
+            context = tmux('capture-pane', '-p', '-S', '-256', '-t', pane_id) if height else tmux('capture-pane', '-p', '-t', pane_id)
+            screen = '\n'.join(context.splitlines()[-height:]) + '\n' if height else context
         except RuntimeError:
             # Pane may disappear between listing and capture.
             continue
-        pid, process_state, agent = find_agent(processes, int(root_pid))
+        pid, process_state, agent = process
         if pid:
             KNOWN_AGENTS[pane_id] = agent
         agent = agent or KNOWN_AGENTS.get(pane_id) or (command if command in ('codex', 'claude') else '')
         analyser = analyse_claude_screen if agent == 'claude' else analyse_screen
         result = analyser(screen, agent or command, dead == '1',
-                                None if pid is None else bool(pid), process_state, exit_status, in_mode == '1', processes is not None)
+                                None if pid is None else bool(pid), process_state, exit_status, in_mode == '1', processes is not None,
+                                dialogue_context=context)
         if agent == 'claude':
             result['foreground_screen_state'] = result['state']
         watcher = CLAUDE_LOGS if agent == 'claude' else ROLLOUTS
@@ -1609,8 +2069,13 @@ def snapshot(socket, selected):
         if events and last_event in ('turn_aborted', 'turn_failed', 'error', 'stream_error') and result.get('error_kind') == events[-1]['kind']:
             result['issue_event_id'] = events[-1]['id']
         if agent == 'claude' and pid:
-            apply_claude_background(result, CLAUDE_BACKGROUND.read_path(CLAUDE_LOGS.root_log(pid, time.monotonic())))
-            CLAUDE_COMPLETIONS.apply(result, pane_id, pid, time.monotonic())
+            claude_path = CLAUDE_LOGS.root_log(pid, time.monotonic())
+            claude_paths[pane_id] = (claude_path, CLAUDE_BACKGROUND.read_path(claude_path))
+            if claude_path:
+                name = os.path.basename(claude_path)
+                sid = name[:-6] if name.endswith('.jsonl') else ''
+                if re.fullmatch(r'[a-fA-F0-9-]{36}', sid):
+                    session_contexts[pid] = sid
         elif agent == 'codex' and pid:
             apply_codex_background(result, CODEX_BACKGROUND.sample(pid, ROLLOUTS.root_log(pid, time.monotonic()), processes, time.monotonic()))
             CODEX_COMPLETIONS.apply(result, pane_id, pid, time.monotonic())
@@ -1620,17 +2085,23 @@ def snapshot(socket, selected):
                           fingerprint=hashlib.sha256(screen.encode()).hexdigest(),
                           process_id=pid, event_source=has_events, lifecycle_events=events, lifecycle_cursor=lifecycle_cursor,
                           telemetry=USAGE_LOGS.sample(usage_path, agent), **RESULT_LOGS.sample(usage_path, agent), **result))
-    resources = RESOURCE_SAMPLES.sample_all([pane.get('process_id') for pane in panes], processes)
-    owners = {}
-    for pane in panes:
-        owners.setdefault(pane.get('process_id'), set()).add(pane['session'])
+    resource_args = dict(session_contexts=session_contexts) if session_contexts else {}
+    resources = RESOURCE_SAMPLES.sample_all([pane.get('process_id') for pane in panes], processes, **resource_args)
     for pane in panes:
         value = resources.get(pane.get('process_id'))
         if value is not None:
             value = dict(value)
-            if len(owners.get(pane.get('process_id'), ())) > 1:
-                value.update(scope='shared_process', shared_sessions=len(owners[pane['process_id']]))
+            count = len(owners.get(pane.get('process_id'), ()))
+            value.update(attribution='shared' if count > 1 else 'exclusive' if count else 'unattributed',
+                         attribution_source='tmux_process_tree')
+            if count > 1:
+                value.update(scope='shared_process', shared_sessions=count)
         pane['resources'] = value
+        if pane.get('agent') == 'claude' and pane.get('process_id'):
+            path, background = claude_paths[pane['pane_id']]
+            background = CLAUDE_BACKGROUND.with_process_activity(path, background, value, root_pid=pane['process_id'], processes=processes)
+            apply_claude_background(pane, background)
+            CLAUDE_COMPLETIONS.apply(pane, pane['pane_id'], pane['process_id'], time.monotonic())
     return dict(panes=panes, sampled_at=time.time(), collection_ms=round((time.monotonic() - started) * 1000))
 
 

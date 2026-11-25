@@ -3,10 +3,108 @@ from collections import deque
 from difflib import SequenceMatcher
 import math
 import re
+import uuid
 
 CLAUDE_GENERATED = re.compile(r'↓\s*(\d+(?:\.\d+)?)\s*([km]?)\s+tokens\b', re.I)
 
 OUTPUT_CHROME = re.compile(r'^\s*(?:\+\s*(?:Show details\b|\d+\s+(?:more\s+)?lines?\b)|(?:⎿\s*)?Tip:\s+Use /btw\b)', re.I)
+ANSI = re.compile(r'\x1b\[[0-?]*[ -/]*[@-~]')
+
+
+class DialogueTracker:
+    """Count only observed assistant text; resource and mixed activity are separate."""
+    def __init__(self):
+        self.streams = {}
+        self.nonce = uuid.uuid4().hex
+        self.generation = 0
+
+    def reset(self):
+        self.streams.clear()
+
+    @staticmethod
+    def key(row):
+        cursor = row.get('lifecycle_cursor') or {}
+        log = (cursor.get('path'), cursor.get('device'), cursor.get('inode')) if cursor.get('path') else None
+        # A shared app-server PID can own multiple independent local logs.
+        identity = repr(row.get('result_identity')) if row.get('result_identity') is not None else log
+        owner = row.get('process_id') or row.get('pane_id')
+        return (row.get('source', ''), owner, row.get('dialogue_source', ''),
+                row.get('dialogue_identity', ''), identity)
+
+    @staticmethod
+    def text(row):
+        value = row.get('dialogue_text', '')
+        if not isinstance(value, str):
+            return ''
+        # Wrapping and ANSI styling do not constitute new conversation output.
+        return ''.join(c for c in ANSI.sub('', value) if not c.isspace() and c >= ' ' and c != '\x7f')[-16384:]
+
+    @staticmethod
+    def observation_order(row):
+        token = str(row.get('dialogue_sample_id', ''))
+        return (1, int(token), '') if token.isascii() and token.isdigit() else (0, 0, token)
+
+    @staticmethod
+    def appended(previous, current):
+        if current.startswith(previous):
+            return len(current) - len(previous)
+        if not current or previous.endswith(current):
+            return 0
+        # Linear suffix/prefix overlap handles terminal scroll without quadratic
+        # diffs. A wholly replaced screen is an uncertain redraw, hence baseline.
+        combined = current + '\0' + previous
+        prefix = [0] * len(combined)
+        for i in range(1, len(combined)):
+            match = prefix[i - 1]
+            while match and combined[i] != combined[match]:
+                match = prefix[match - 1]
+            if combined[i] == combined[match]:
+                match += 1
+            prefix[i] = match
+        overlap = prefix[-1] if prefix else 0
+        return len(current) - overlap if overlap else 0
+
+    def update(self, rows, now, max_gap_seconds=2):
+        max_gap = (max_gap_seconds if isinstance(max_gap_seconds, (int, float))
+                   and not isinstance(max_gap_seconds, bool) and math.isfinite(max_gap_seconds)
+                   and max_gap_seconds > 0 else 2)
+        grouped = {}
+        for row in rows:
+            grouped.setdefault(self.key(row), []).append(row)
+        current, snapshots = {}, {}
+        for key, aliases in grouped.items():
+            # One producer observation per physical stream, even with tmux aliases.
+            row = max(aliases, key=lambda item: (bool(item.get('dialogue_available')),
+                       item.get('state') == 'running' and not item.get('error_kind'),
+                       self.observation_order(item), len(self.text(item))))
+            available = row.get('dialogue_available') is True
+            active = row.get('state') == 'running' and not row.get('error_kind')
+            token = row.get('dialogue_sample_id', now)
+            text = self.text(row) if available else ''
+            saved = self.streams.get(key)
+            fresh = saved is None or token != saved['token']
+            if saved is None or (fresh and (now - saved['observed'] > max_gap or
+                                           available != saved['available'] or
+                                           (active and not saved['active']))):
+                self.generation += 1
+                saved = dict(epoch='{}:{}'.format(self.nonce, self.generation), total=0,
+                             sample_id=0, text=text, active=active, available=available,
+                             complete=False, token=None, observed=now)
+                fresh = True
+            if fresh:
+                if available and active and saved['available'] and saved['active'] and saved['sample_id']:
+                    saved['total'] += self.appended(saved['text'], text)
+                saved.update(text=text, active=active, available=available,
+                             complete=available and row.get('dialogue_complete') is True,
+                             token=token, observed=now, sample_id=saved['sample_id'] + 1)
+            # Replayed frames cannot renew freshness or change the count.
+            snapshots[key] = dict(epoch=saved['epoch'], sample_id=saved['sample_id'],
+                                  total_chars=saved['total'], available=saved['available'],
+                                  complete=saved['complete'], source=row.get('dialogue_source', ''),
+                                  sample_age_seconds=round(max(0, now - saved['observed']), 3))
+            current[key] = saved
+        self.streams = current
+        return snapshots
 
 
 class ActivityTracker:
@@ -15,15 +113,19 @@ class ActivityTracker:
         self.panes = {}
         self.epoch = None
         self.next_activity_epoch = 0
+        self.dialogue = DialogueTracker()
 
     def reset(self):
         self.panes.clear()
         self.epoch = None
+        self.dialogue.reset()
 
-    def update(self, rows, now, epoch=0):
+    def update(self, rows, now, epoch=0, max_gap_seconds=2):
         if epoch != self.epoch:
             self.reset()
             self.epoch = epoch
+        rows = list(rows)
+        dialogue = self.dialogue.update(rows, now, max_gap_seconds=max_gap_seconds)
         current, decorated = {}, []
         for row in rows:
             key = row['pane_id']
@@ -31,7 +133,7 @@ class ActivityTracker:
             text = '\n'.join(line for line in text.splitlines() if not OUTPUT_CHROME.match(line))[-1200:]
             active = row.get('state') == 'running' and not row.get('error_kind')
             pid = row.get('process_id')
-            background_bytes = row.get('background_output_bytes', 0)
+            background_bytes = row.get('background_output_observed_bytes', row.get('background_output_bytes', 0))
             background_revision = row.get('background_revision', 0)
             background_progress = row.get('background_progress', '')
             cursor = row.get('lifecycle_cursor') or {}
@@ -84,6 +186,7 @@ class ActivityTracker:
                 saved['generated'] = None
             current[key] = saved
             decorated.append(dict(row, output_total=saved['total'], activity_epoch=saved['activity_epoch'],
+                                  dialogue_output=dialogue[self.dialogue.key(row)],
                                   activity_source=saved['source'] if active else '', output_rate=round(rate, 2),
                                   activity_level=round(min(1, math.log1p(rate) / math.log1p(60)), 3),
                                   activity_age=round(now - saved['last'], 2) if saved['last'] is not None else None))

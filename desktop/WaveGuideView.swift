@@ -44,8 +44,10 @@ final class WaveGuidePresenter: NSObject, NSWindowDelegate {
 
 struct WaveGuideView: View {
     @State private var skin = ThemePalette.current
+    @State private var waveStyle = ThemePalette.currentWaveStyle
     @State private var focusedRole: ResourceRole?
     private var palette: PaletteResolver { PaletteResolver(theme: skin, statusStyle: "theme") }
+    private var resolvedWaveSkin: WaveSkin? { WaveSkin(rawValue: palette.waveStyle(waveStyle)) }
     private let appearanceTimer = Timer.publish(every: 1, on: .main, in: .common).autoconnect()
 
     var body: some View {
@@ -67,6 +69,7 @@ struct WaveGuideView: View {
         .preferredColorScheme(palette.skin.light ? .light : .dark)
         .onReceive(appearanceTimer) { _ in
             if skin != ThemePalette.current { skin = ThemePalette.current }
+            if waveStyle != ThemePalette.currentWaveStyle { waveStyle = ThemePalette.currentWaveStyle }
         }
     }
 
@@ -82,7 +85,7 @@ struct WaveGuideView: View {
             }
             Text("一眼分清，Agent 在忙什么。")
                 .font(.system(size: 26, weight: .semibold)).foregroundColor(palette.ui(.text))
-            Text("四条动态信号共用一条基线，内存单独静态显示。颜色跟随皮肤，形状帮助你分辨通道。")
+            Text("CPU、GPU、磁盘、网络与对话输出五层叠在同一圈。颜色区分通道，五层统一使用所选声浪皮肤的造型。")
                 .font(.system(size: 13)).lineSpacing(4).foregroundColor(palette.ui(.muted))
                 .fixedSize(horizontal: false, vertical: true)
         }
@@ -101,7 +104,9 @@ struct WaveGuideView: View {
             }
             Text("最近 24 秒：过去 → 现在。点击图例，只突出一种信号。")
                 .font(.system(size: 11)).foregroundColor(palette.ui(.muted))
-            GuideSignalDiagram(palette: palette, focusedRole: focusedRole).frame(height: 184)
+            Text(waveSkinDescription).font(.system(size: 11, weight: .medium))
+                .foregroundColor(palette.ui(.accent)).fixedSize(horizontal: false, vertical: true)
+            GuideSignalDiagram(palette: palette, waveStyle: palette.waveStyle(waveStyle), focusedRole: focusedRole).frame(height: 184)
             HStack(spacing: 5) {
                 ForEach(ResourceRole.allCases, id: \.self) { role in
                     Button {
@@ -125,13 +130,19 @@ struct WaveGuideView: View {
                     .accessibilityAddTraits(focusedRole == role ? .isSelected : [])
                 }
             }
-            Text("留空仅用于示意未知：实际声浪不绘制未观测通道，悬停查看覆盖情况；已观测零活动没有波峰。这是固定示例，不展示你的会话数据。")
+            Text("留空仅用于示意未知：缺失处不补峰；仍在运行时，已观测历史保留到原来的24秒期限。悬停查看当前覆盖；已观测零活动没有新波峰。这是固定示例，不展示你的会话数据。")
                 .font(.system(size: 10)).foregroundColor(palette.ui(.muted))
                 .fixedSize(horizontal: false, vertical: true)
         }
         .padding(18)
         .background(RoundedRectangle(cornerRadius: 16).fill(palette.ui(.surface)))
         .overlay(RoundedRectangle(cornerRadius: 16).stroke(palette.ui(.accent).opacity(0.14)))
+    }
+
+    private var waveSkinDescription: String {
+        guard let selected = resolvedWaveSkin else { return "当前声浪已关闭；选择声浪皮肤后，五层统一显示所选造型。" }
+        let mode = waveStyle == "theme" ? "跟随界面皮肤" : "独立声浪皮肤"
+        return mode + " · " + selected.title + "：" + selected.description
     }
 
     private var channelCards: some View {
@@ -148,7 +159,7 @@ struct WaveGuideView: View {
                         HStack(alignment: .firstTextBaseline, spacing: 8) {
                             Text(role.title).font(.system(size: 13, weight: .semibold))
                                 .foregroundColor(palette.ui(.text))
-                            Text(role == .memory ? "静态" : "最近 24 秒")
+                            Text("最近 24 秒")
                                 .font(.system(size: 10, weight: .medium)).foregroundColor(palette.ui(.muted))
                         }
                         Text(role.graphicDescription).font(.system(size: 11, weight: .medium))
@@ -169,8 +180,8 @@ struct WaveGuideView: View {
             Text("这样读，不会误判").font(.system(size: 14, weight: .semibold))
                 .foregroundColor(palette.ui(.text))
             rule("01", "起伏看变化，颜色看来源", "各通道有自己的单位和标尺，柱高不能跨通道比较。少量运行也按近期真实变化显示；没有新增活动就没有起伏。")
-            rule("02", "未观测看悬停，零活动无波峰", "零表示已观测且没有活动；通道暂不可观测时不绘制，悬停可查看覆盖情况。断线、平台限制和共享资源都可能让数据不足。")
-            rule("03", "等待就收起，完成看状态", "会话等待输入或停止后，动态声浪收起。工具结束、后台终端保留或内存仍有占用，都不能单独证明任务还在运行。")
+            rule("02", "未观测看悬停，历史按时间移出", "零表示已观测且没有活动。短暂缺指标时不增加波峰，近24秒的真实历史继续移出；恢复采样先建基线。任务进入等待、异常或离线时停止声浪。")
+            rule("03", "等待就收起，完成看状态", "会话等待输入或停止后，动态声浪收起。后台终端保留、显存或内存占用不能单独证明任务仍在运行；已绑定实验的真实进展会继续显示后台运行。")
         }
     }
 
@@ -188,14 +199,16 @@ struct WaveGuideView: View {
 }
 
 /// Fixed, deliberately different examples. Nil is an observation gap, not zero.
-/// All four dynamic shapes share the same baseline and 24 one-second slots.
+/// All channels use one selected skin, baseline and 24 one-second slots.
 private struct GuideSignalDiagram: View {
     let palette: PaletteResolver
+    let waveStyle: String
     let focusedRole: ResourceRole?
-    private let output: [CGFloat?] = [0, 0, 0.12, 0.28, 0.52, 0.24, 0, 0.16, 0.38, nil, nil, 0, 0.12, 0.42, 0.78, 0.48, 0.18, 0, 0, 0.27, 0.6, 0.36, 0.15, 0]
-    private let io: [CGFloat?] = [0, 0.17, 0.33, 0.14, 0, 0, 0.54, 0.78, 0.32, nil, nil, 0.18, 0.46, 0.22, 0, 0, 0.3, 0.47, 0.19, 0, 0, 0.24, 0.4, 0.14]
-    private let tools: [CGFloat?] = [0, 0, 0, 0.22, 0, 0, 0, 0, 0.45, nil, nil, 0, 0, 0, 0, 0.7, 0, 0, 0, 0, 0.3, 0, 0, 0]
+    private let cpu: [CGFloat?] = [0, 0, 0.12, 0.28, 0.52, 0.24, 0, 0.16, 0.38, nil, nil, 0, 0.12, 0.42, 0.78, 0.48, 0.18, 0, 0, 0.27, 0.6, 0.36, 0.15, 0]
+    private let disk: [CGFloat?] = [0, 0.17, 0.33, 0.14, 0, 0, 0.54, 0.78, 0.32, nil, nil, 0.18, 0.46, 0.22, 0, 0, 0.3, 0.47, 0.19, 0, 0, 0.24, 0.4, 0.14]
+    private let gpu: [CGFloat?] = [0, 0, 0, 0.22, 0, 0, 0, 0, 0.45, nil, nil, 0, 0, 0, 0, 0.7, 0, 0, 0, 0, 0.3, 0, 0, 0]
     private let network: [CGFloat?] = [0, 0.18, 0.62, 0.42, 0.15, 0, 0, 0, 0.2, nil, nil, 0.32, 0.72, 0.35, 0.1, 0, 0, 0.18, 0.52, 0.86, 0.36, 0.12, 0, 0]
+    private let output: [CGFloat?] = [0, 0, 0.14, 0.4, 0.17, 0, 0, 0.24, 0, nil, nil, 0.15, 0, 0.33, 0.55, 0, 0, 0.19, 0.42, 0.26, 0, 0.53, 0.72, 0.35]
 
     var body: some View {
         Canvas { context, size in
@@ -221,71 +234,88 @@ private struct GuideSignalDiagram: View {
                 context.draw(Text(title).font(.system(size: 9, design: .monospaced)).foregroundColor(palette.ui(.muted)),
                              at: CGPoint(x: position, y: baseline + 16), anchor: index == 0 ? .leading : index == 4 ? .trailing : .center)
             }
-            // Build separate segments so missing samples never get bridged.
+            // Build positive segments so neither zero nor unknown is bridged.
             func segments(_ values: [CGFloat?]) -> [[CGPoint]] {
                 var all: [[CGPoint]] = [], current: [CGPoint] = []
                 for (index, value) in values.enumerated() {
-                    if let value {
+                    if let value, value > 0 {
                         current.append(CGPoint(x: x(index), y: y(value)))
                     } else if !current.isEmpty { all.append(current); current = [] }
                 }
                 if !current.isEmpty { all.append(current) }
                 return all
             }
-            for points in segments(output) where points.count > 1 {
-                var band = Path(); band.move(to: CGPoint(x: points[0].x, y: baseline))
-                for point in points { band.addLine(to: point) }
-                band.addLine(to: CGPoint(x: points.last!.x, y: baseline)); band.closeSubpath()
-                context.fill(band, with: .color(color(.output).opacity(0.22)))
-                var ridge = Path(); ridge.addLines(points)
-                context.stroke(ridge, with: .color(color(.output).opacity(0.85)), lineWidth: 1.2)
+            func curve(_ points: [CGPoint]) -> Path {
+                var path = Path()
+                guard let first = points.first else { return path }
+                path.move(to: first)
+                for index in 1..<points.count {
+                    let before = points[index - 1], after = points[index]
+                    let middle = (before.x + after.x) / 2
+                    path.addCurve(to: after, control1: CGPoint(x: middle, y: before.y),
+                                  control2: CGPoint(x: middle, y: after.y))
+                }
+                return path
             }
-            for (index, value) in io.enumerated() {
-                guard let value, value > 0 else { continue }
-                let rect = CGRect(x: x(index) - 1.7, y: y(value), width: 3.4, height: baseline - y(value))
-                context.fill(Path(roundedRect: rect, cornerRadius: 1), with: .color(color(.io).opacity(0.72)))
-            }
-            for points in segments(network) where points.count > 1 {
-                var line = Path(); line.addLines(points)
-                context.stroke(line, with: .color(color(.network)), lineWidth: 1.25)
-            }
-            for index in network.indices {
-                guard let value = network[index], value > 0.3 else { continue }
-                let previous = index > 0 ? network[index - 1] ?? 0 : 0
-                let next = index < 23 ? network[index + 1] ?? 0 : 0
-                if value >= previous && value > next {
-                    var cap = Path(); cap.move(to: CGPoint(x: x(index) - 3.5, y: y(value)))
-                    cap.addLine(to: CGPoint(x: x(index) + 3.5, y: y(value)))
-                    context.stroke(cap, with: .color(color(.network)), lineWidth: 2.2)
+            let profiles: [(ResourceRole, [CGFloat?])] = [(.cpu, cpu), (.gpu, gpu), (.disk, disk), (.network, network), (.output, output)]
+            for (role, values) in profiles {
+                let ink = color(role)
+                switch WaveSkin(rawValue: waveStyle) {
+                case .curve, .aurora:
+                    for points in segments(values) {
+                        guard let first = points.first, let last = points.last else { continue }
+                        if points.count == 1 {
+                            var cap = Path(); cap.move(to: CGPoint(x: first.x - 2, y: first.y))
+                            cap.addLine(to: CGPoint(x: first.x + 2, y: first.y))
+                            context.stroke(cap, with: .color(ink), lineWidth: 1.3)
+                            continue
+                        }
+                        let ridge = curve(points)
+                        if waveStyle == WaveSkin.aurora.rawValue {
+                            var band = ridge
+                            band.addLine(to: CGPoint(x: last.x, y: baseline))
+                            band.addLine(to: CGPoint(x: first.x, y: baseline)); band.closeSubpath()
+                            context.fill(band, with: .color(ink.opacity(0.14)))
+                        }
+                        context.stroke(ridge, with: .color(ink.opacity(0.88)), lineWidth: 1.3)
+                    }
+                case .bars, .plasma, .radar, .dots:
+                    for (index, value) in values.enumerated() {
+                        guard let value, value > 0 else { continue }
+                        let tip = CGPoint(x: x(index), y: y(value))
+                        var stem = Path(); stem.move(to: CGPoint(x: tip.x, y: baseline)); stem.addLine(to: tip)
+                        switch WaveSkin(rawValue: waveStyle) {
+                        case .bars:
+                            let rect = CGRect(x: tip.x - 1.5, y: tip.y, width: 3, height: baseline - tip.y)
+                            context.fill(Path(roundedRect: rect, cornerRadius: 0.6), with: .color(ink.opacity(0.7)))
+                            var cap = Path(); cap.move(to: CGPoint(x: tip.x - 2.4, y: tip.y)); cap.addLine(to: CGPoint(x: tip.x + 2.4, y: tip.y))
+                            context.stroke(cap, with: .color(ink), lineWidth: 0.8)
+                        case .plasma:
+                            for (width, opacity) in [(CGFloat(7), 0.1), (4, 0.22), (1.5, 0.85)] {
+                                context.stroke(stem, with: .color(ink.opacity(opacity)), style: StrokeStyle(lineWidth: width, lineCap: .round))
+                            }
+                            context.fill(Path(ellipseIn: CGRect(x: tip.x - 1.7, y: tip.y - 1.7, width: 3.4, height: 3.4)), with: .color(ink))
+                        case .radar:
+                            context.stroke(stem, with: .color(ink.opacity(0.7)), lineWidth: 0.8)
+                            var diamond = Path(); diamond.move(to: CGPoint(x: tip.x, y: tip.y - 2.8))
+                            diamond.addLine(to: CGPoint(x: tip.x + 2.8, y: tip.y)); diamond.addLine(to: CGPoint(x: tip.x, y: tip.y + 2.8))
+                            diamond.addLine(to: CGPoint(x: tip.x - 2.8, y: tip.y)); diamond.closeSubpath()
+                            context.stroke(diamond, with: .color(ink), lineWidth: 0.9)
+                        case .dots:
+                            context.fill(Path(ellipseIn: CGRect(x: tip.x - 1.8, y: tip.y - 1.8, width: 3.6, height: 3.6)), with: .color(ink))
+                        default: break
+                        }
+                    }
+                case nil: break
                 }
             }
-            for (index, value) in tools.enumerated() {
-                guard let value, value > 0 else { continue }
-                let tip = CGPoint(x: x(index), y: y(value))
-                var pin = Path(); pin.move(to: CGPoint(x: tip.x, y: baseline)); pin.addLine(to: tip)
-                context.stroke(pin, with: .color(color(.tools)), lineWidth: 1)
-                var diamond = Path(); diamond.move(to: CGPoint(x: tip.x, y: tip.y - 3.4))
-                diamond.addLine(to: CGPoint(x: tip.x + 3.4, y: tip.y)); diamond.addLine(to: CGPoint(x: tip.x, y: tip.y + 3.4))
-                diamond.addLine(to: CGPoint(x: tip.x - 3.4, y: tip.y)); diamond.closeSubpath()
-                context.fill(diamond, with: .color(color(.tools)))
-            }
-            // An active tool is a static outline; it never creates a result pulse.
-            let active = CGPoint(x: x(23), y: baseline - 8)
-            var pending = Path(); pending.move(to: CGPoint(x: active.x, y: active.y - 3.4))
-            pending.addLine(to: CGPoint(x: active.x + 3.4, y: active.y)); pending.addLine(to: CGPoint(x: active.x, y: active.y + 3.4))
-            pending.addLine(to: CGPoint(x: active.x - 3.4, y: active.y)); pending.closeSubpath()
-            context.stroke(pending, with: .color(color(.tools)), lineWidth: 1)
             context.draw(Text("未知（示意）").font(.system(size: 9)).foregroundColor(palette.ui(.muted)),
                          at: CGPoint(x: (x(9) + x(10)) / 2, y: 18))
             var gap = Path(); gap.move(to: CGPoint(x: x(9), y: 27)); gap.addLine(to: CGPoint(x: x(10), y: 27))
             context.stroke(gap, with: .color(palette.ui(.muted).opacity(0.5)), lineWidth: 1)
-            var arc = Path(); arc.addArc(center: CGPoint(x: left + 9, y: 173), radius: 8,
-                                        startAngle: .degrees(195), endAngle: .degrees(345), clockwise: false)
-            context.stroke(arc, with: .color(color(.memory)), style: StrokeStyle(lineWidth: 2.5, lineCap: .round))
-            context.draw(Text("内存另作静态细弧，不随工作节奏起伏").font(.system(size: 10)).foregroundColor(palette.ui(.muted)),
-                         at: CGPoint(x: left + 26, y: 169), anchor: .leading)
+
         }
         .accessibilityElement(children: .ignore)
-        .accessibilityLabel("固定声浪示意：最近二十四秒从左向右；输出光带、进程 I/O 柱、工具事件针、网络曲线共用基线，内存另作静态细弧。空心菱形表示工具尚未返回。中间留空仅演示未知，实际数据覆盖请悬停查看。")
+        .accessibilityLabel("固定声浪示意：最近二十四秒从左向右；五种通道由颜色区分，共用基线和\(WaveSkin(rawValue: waveStyle)?.title ?? "关闭")声浪皮肤。对话输出单位是观测字符/秒，非Token。中间留空仅演示未知，实际数据覆盖请悬停查看。")
     }
 }

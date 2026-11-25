@@ -35,7 +35,7 @@ OUTPUT.mkdir(exist_ok=True)
 files = [ROOT / name for name in ('agent-orbit', 'codex-remote', 'shortcuts.zsh', 'build_desktop.sh', 'Makefile',
                                  'README.md', 'LICENSE', 'THIRD_PARTY_NOTICES.md', 'CONTRIBUTING.md', 'OPEN_SOURCE_RESEARCH.md',
                                  '.gitignore', 'settings.example.json')]
-files += [ROOT / name for name in ('agent_orbit_cli.py', 'configuration.py', 'local_probe.py', 'remote_probe.py', 'monitor.py',
+files += [ROOT / name for name in ('agent_orbit_cli.py', 'configuration.py', 'process_snapshot.py', 'local_probe.py', 'remote_probe.py', 'monitor.py',
                                  'desktop_bridge.py', 'desktop_launch.py', 'completion_tracker.py', 'response_tracker.py', 'resource_probe.py', 'remote_bundle.py',
                                  'activity_tracker.py', 'manual_tracker.py', 'usage_tracker.py', 'error_tracker.py')]
 files += sorted(ROOT.glob('test_*.py'))

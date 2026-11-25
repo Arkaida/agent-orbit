@@ -162,7 +162,21 @@ struct SettingsView: View {
                     .background(RoundedRectangle(cornerRadius: 6).fill(PaletteResolver(theme: draft.theme, statusStyle: draft.orbitLabelColor).ui(.base)))
             }
             Section("外围声浪") {
-                Toggle("多层资源声浪", isOn: $draft.waveResources).disabled(draft.waveStyle == "off")
+                Toggle("活动声浪", isOn: Binding(get: {
+                    draft.waveResources && draft.waveStyle != "off"
+                }, set: { enabled in
+                    draft.waveResources = enabled
+                    if enabled && draft.waveStyle == "off" { draft.waveStyle = "theme" }
+                }))
+                Picker("声浪皮肤", selection: $draft.waveStyle) {
+                    Text("跟随界面皮肤").tag("theme")
+                    ForEach(WaveSkin.allCases, id: \.self) { skin in
+                        Text(skin.title).tag(skin.rawValue)
+                    }
+                    Text("关闭").tag("off")
+                }.disabled(!draft.waveResources)
+                Text("跟随界面皮肤会自动选择默认声浪造型；也可独立选择声浪皮肤。五层使用同一造型，通道颜色始终由界面皮肤提供。")
+                    .font(.caption).foregroundColor(ThemePalette.ui(.muted))
                 HStack(spacing: 10) {
                     ForEach(ResourceRole.allCases, id: \.self) { role in
                         HStack(spacing: 4) {
@@ -172,44 +186,27 @@ struct SettingsView: View {
                         }.help(role.graphicDescription + "\n" + role.description)
                     }
                 }.font(.system(size: 10)).foregroundColor(PaletteResolver(theme: draft.theme, statusStyle: draft.orbitLabelColor).ui(.text))
-                Text("输出、进程 I/O、工具与网络共用一圈基线，展示最近 24 秒；内存是静态细弧。没有活动不画起伏，未知不填零，等待时收起。")
+                Text("CPU、GPU、磁盘、网络与对话输出五层共用一圈基线，展示最近 24 秒。对话输出单独统计新增正文，单位为观测字符/秒；不是Token。没有活动不画起伏，未知不填零，等待时收起。")
                     .font(.caption).foregroundColor(ThemePalette.ui(.muted))
                 Button("声浪图说明…") {
                     NotificationCenter.default.post(name: Notification.Name("AgentOrbit.OpenWaveGuide"), object: nil)
-                }.help("查看五种信号的形状、含义与观测范围，不会改变当前设置")
-                Picker("样式", selection: $draft.waveStyle) {
-                    Text("跟随皮肤").tag("theme")
-                    Text("全息声浪柱 · 分段峰值").tag("bars")
-                    Text("连续曲线").tag("curve")
-                    Text("节奏光点").tag("dots")
-                    Text("等离子双波 · 多层粒子").tag("plasma")
-                    Text("极光光带 · 多层轨迹").tag("aurora")
-                    Text("雷达涟漪 · 输出触发").tag("radar")
-                    Text("关闭").tag("off")
-                }.disabled(draft.waveResources && draft.waveStyle != "off")
-                Picker("配色", selection: $draft.wavePalette) {
-                    Text("跟随皮肤").tag("theme")
-                    Text("冰蓝").tag("ice")
-                    Text("极光紫").tag("aurora")
-                    Text("暖焰").tag("ember")
-                    Text("按运行状态").tag("status")
-                }.disabled(draft.waveStyle == "off" || draft.waveResources)
+                }.help("查看声浪皮肤、五种通道颜色与观测范围，不会改变当前设置")
                 HStack {
                     Text("高度")
                     Slider(value: $draft.waveHeight, in: 0.5...1.5, step: 0.05)
                     Text("\(Int((draft.waveHeight * 100).rounded()))%").monospacedDigit().frame(width: 44)
-                }.disabled(draft.waveStyle == "off")
+                }.disabled(draft.waveStyle == "off" || !draft.waveResources)
                 HStack {
                     Text("密度")
                     Slider(value: $draft.waveDensity, in: 0.6...1.6, step: 0.1)
                     Text("\(Int((draft.waveDensity * 100).rounded()))%").monospacedDigit().frame(width: 44)
-                }.disabled(draft.waveStyle == "off")
+                }.disabled(draft.waveStyle == "off" || !draft.waveResources)
                 HStack {
                     Text("低活动灵敏度")
                     Slider(value: $draft.waveSensitivity, in: 0.6...1.8, step: 0.1)
                     Text("\(Int((draft.waveSensitivity * 100).rounded()))%").monospacedDigit().frame(width: 44)
-                }.disabled(draft.waveStyle == "off")
-                Text(draft.waveResources && draft.waveStyle != "off" ? "多层共用同一圈基线并叠加皮肤资源色；关闭多层可调整单层样式与配色。" : "选择跟随皮肤，声浪样式与配色会随皮肤一起切换。")
+                }.disabled(draft.waveStyle == "off" || !draft.waveResources)
+                Text("颜色区分活动来源，声浪皮肤统一改变五层的线条、轮廓与辉光。高度、密度与灵敏度只调整显示，不改变采集结果。")
                     .font(.caption).foregroundColor(ThemePalette.ui(.muted))
             }
             Section("显示") {

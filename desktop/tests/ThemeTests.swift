@@ -164,6 +164,41 @@ private final class ThemeTestSuite {
         check(fallback.skin.id == SkinDefinition.all[0].id && fallback.statusStyle == "theme", "Unknown stored preferences need a safe palette fallback")
     }
 
+    func waveSkinSelectionAndCompatibility() {
+        let identifiers = WaveSkin.allCases.map(\.rawValue)
+        check(Set(identifiers) == Set(["bars", "plasma", "aurora", "radar", "curve", "dots"]),
+              "The six wave skins must preserve their existing configuration IDs")
+        check(Set(identifiers).count == identifiers.count, "Wave skin choices need unique stable IDs")
+        for style in WaveSkin.allCases {
+            check(!style.title.isEmpty && !style.description.isEmpty, "Every selectable wave skin needs a shared title and explanation")
+            var settings = AppSettings(); settings.waveStyle = style.rawValue
+            do {
+                try settings.validate()
+                let decoder = JSONDecoder(); decoder.keyDecodingStrategy = .convertFromSnakeCase
+                let restored = try decoder.decode(AppSettings.self, from: settings.encoded())
+                check(restored.waveStyle == style.rawValue, "A wave skin selected in settings must round-trip its stable ID")
+            } catch { failures.append("Wave skin \(style.rawValue) could not validate/round-trip: \(error)") }
+        }
+        for skin in SkinDefinition.all {
+            let palette = PaletteResolver(skin: skin, statusStyle: "theme")
+            check(WaveSkin(rawValue: skin.defaultWaveStyle) != nil, "Each interface skin must resolve to an available wave skin")
+            check(palette.waveStyle("theme") == skin.defaultWaveStyle, "Following the interface skin must select its default wave skin")
+            for style in WaveSkin.allCases {
+                ThemePalette.configure(theme: skin.id, statusStyle: "theme", waveStyle: style.rawValue)
+                check(ThemePalette.currentWaveStyle == style.rawValue && ThemePalette.waveStyle(ThemePalette.currentWaveStyle) == style.rawValue,
+                      "The guide and live renderer must share the explicitly selected wave skin across interface skins")
+            }
+        }
+        ThemePalette.configure(theme: "neon", statusStyle: "theme", waveStyle: "plasma")
+        let unchangedInterfaceSkin = ThemePalette.current
+        ThemePalette.configure(theme: "neon", statusStyle: "theme", waveStyle: "dots")
+        check(ThemePalette.current == unchangedInterfaceSkin && ThemePalette.currentWaveStyle == "dots",
+              "Changing only the wave skin must be observable without changing the interface skin")
+        ThemePalette.configure(theme: "aurora", statusStyle: "theme")
+        check(ThemePalette.currentWaveStyle == "theme" && ThemePalette.waveStyle(ThemePalette.currentWaveStyle) == "aurora",
+              "Existing two-argument configuration calls must retain the follow-interface default")
+    }
+
     func legacySettingsRoundTrip() {
         let decoder = JSONDecoder(); decoder.keyDecodingStrategy = .convertFromSnakeCase
         for json in ["{}", "{\"version\":1,\"theme\":\"aurora\",\"orbit_label_color\":\"theme\",\"local_codex_home\":\"/Users/demo/.codex\"}"] {
@@ -232,13 +267,13 @@ private final class ThemeTestSuite {
     }
 
     func resourcePalettes() {
-        check(ResourceRole.allCases == [.output, .io, .tools, .network, .memory],
-              "Output and process I/O must remain separate channels in the shared legend")
-        check(ResourceRole.output.title == "输出" && ResourceRole.io.title == "进程 I/O",
-              "Channel titles must not merge output activity and process I/O")
+        check(ResourceRole.allCases == [.cpu, .gpu, .disk, .network, .output],
+              "The shared legend exposes four hardware channels and independent dialogue output")
+        check(ResourceRole.cpu.title == "CPU" && ResourceRole.disk.title == "磁盘",
+              "Hardware channel titles describe measured signals")
         for role in ResourceRole.allCases {
             check(!role.description.isEmpty && !role.graphicDescription.isEmpty && !role.symbolName.isEmpty,
-                  "Each shared channel must explain both its measurement and its visual shape")
+                  "Each shared channel must explain its measurement and color-based visual identity")
         }
         for skin in SkinDefinition.all {
             let palette = PaletteResolver(skin: skin, statusStyle: "theme")
@@ -314,6 +349,7 @@ private struct ThemeTests {
         suite.registryAndSemanticPalettes()
         suite.statePrecedence()
         suite.waveSemanticsAndFallbacks()
+        suite.waveSkinSelectionAndCompatibility()
         suite.resourcePalettes()
         suite.legacySettingsRoundTrip()
         suite.injectedSkinExtension()

@@ -7,6 +7,20 @@ UI and precisely associated root logs provide the evidence. Errors and
 approvals take precedence over input readiness. Claude completion also
 checks the foreground lifecycle and explicit child/workflow activity.
 
+Codex reconnects recover the latest recognized task boundary from a bounded
+tail of the precisely associated root log. Historical error records are not
+replayed as new alerts. Log replacement, truncation and skipped large updates
+discard the previous lifecycle before recovery; an unread boundary never
+inherits an older start or completion. Live interrupt footers also recognize
+additional shortcut hints and long input areas, while quoted prose and draft
+input do not establish running state. A visible input box alone does not end
+an active, logged task.
+Timer footers also accept known status items outside the closing bracket,
+including background terminal counts and `/ps` or `/stop` hints. Only the last
+known item may be clipped; arbitrary prose does not become a status suffix.
+Current UI evidence remains useful when a long-running turn's start precedes
+the bounded log tail.
+
 Claude foreground state is reduced from ordered root-log lifecycle records.
 A bounded tail read sees recent records independently of the slower background
 history reconstruction; older file offsets cannot overwrite a newer completion.
@@ -35,6 +49,30 @@ Open terminal handles, persistent shells, and online child-agent totals are
 resource counts. They do not by themselves mean the main task is working.
 Codex's `7 background terminals running` and Claude's `done · 1 shell still
 running` are compatible with waiting for the next user input.
+
+## Confirmed background activity
+
+Foreground completion and background job completion are separate. Explicit
+Claude background tasks can continue after the root answer. Continuous growth
+of a bound task output file, or fresh CPU/GPU/disk activity of its precisely
+associated process branch, keeps it working with a background status. File
+identity and process start identities prevent old history or PID reuse from
+becoming progress. Repeated cached samples do not renew activity evidence.
+`foreground_input_ready` reports foreground readiness separately.
+
+If previously confirmed process activity becomes unobservable, background
+state stays unconfirmed rather than reporting completion or replaying old
+waves. An initial missing resource sample and an ordinary retained terminal
+do not by themselves create this state.
+
+Task completion/stop notifications clear the matching job. Retained handles,
+host CPU load, idle GPU memory and unassociated processes do not establish job
+activity. Explicit Workflow/persistent task schemas are recognized separately
+from Agent counts. NVIDIA-discovered detached processes can also associate through an exact
+CLAUDE_CODE_SESSION_ID match to a confirmed root log, the same user and a
+verified process start identity. Their presence or GPU memory alone is not
+activity; fresh GPU or continuous CPU execution is required. Missing provenance,
+permissions or cross-machine experiments remain coverage limitations.
 
 ## Local Codex
 
@@ -65,49 +103,26 @@ The diagnostic log contains connection metadata, not conversation bodies.
 
 ## Activity visualization
 
-The floating ring's waveform shows recent output and resource changes only for
-sessions currently confirmed as running. Waiting, attention, error, unknown and
-offline nodes clear their activity history; resuming establishes a new baseline.
-Only working members contribute to a group's dynamic activity. In the main
-preview (5.2.8 / build 34), output, root process I/O, tool results and associated
-TCP traffic share one circular baseline and a 24-second timeline, clockwise from
-old to new. They overlap as a ribbon, segmented bars, pins/diamonds and a fine
-curve; RSS is a static arc. No concentric per-channel rings or random activity
-are added. The output signal combines observed page, run-record and confirmed
-background progress changes; it is not byte or token throughput. Each dynamic
-channel scales independently within each session, so heights do not compare
-efficiency across channels or sessions. Known zero activity draws no dynamic
-signal; unknown data is not converted to zero. A static hollow tool diamond may
-indicate an active tool without inventing completion events.
+In 5.3.3, the floating ring adds dialogue output to CPU, disk, GPU and TCP
+network observations on one circular baseline and a 24-second timeline.
+CPU uses measured intervals; GPU uses real per-process SM sample points,
+without filling the time between queries. Disk uses live-thread read_bytes /
+write_bytes, rather than terminal or syscall character counts. GPU memory
+allocation and host totals never substitute for observed process activity.
+Dialogue output counts observed new assistant text independently of hardware coverage. Input drafts,
+spinners, timers, log metadata, tool event counts and Token estimates do not generate output
+peaks. One selected wave skin defines the same geometry for all five channels; colors distinguish their sources. Changing the skin changes every channel together, without changing measurements. The legacy mixed output_total does not drive this layer; RSS remains in tooltips.
 
-Style, palette, height and density change the presentation; they do not change
-completion detection or error alerts. A quiet waveform is not proof that a task
-has completed, and its height is not CPU usage, token throughput or reasoning
-efficiency. Turning it off leaves session monitoring active. See the
-[waveform guide](WAVE_GUIDE.zh-CN.md) for shapes, units and platform coverage.
+Only working members contribute. Waiting, attention, error, unknown and
+offline nodes clear history; resuming establishes a baseline. Channels scale
+independently, and missing coverage remains unknown. Drawing and collection
+have separate clocks. Turning activity waves off leaves monitoring active.
+While a source and session remain live and running, a temporary measurement
+gap retains already observed history until its original 24-second expiry.
+It adds no activity; current coverage remains unknown. Recovery establishes a
+new counter baseline, and observed stream/epoch changes discard the old trace.
+See the [waveform guide](WAVE_GUIDE.zh-CN.md) for units and platform coverage.
 
-Rendering adapts to visibility, recent real activity and measured drawing cost,
-independently of collector sampling and state delivery. In layered mode, brief
-monotonic height transitions (configured for up to 180 ms) only affect geometry backed by observed positive
-activity; they do not synthesize counters, traffic, tokens or tool events. Zero,
-unknown and nonrunning states clear without waiting for an animation. Hiding the
-ring stops its drawing, while monitoring and alerts continue. Returning to the
-ring establishes fresh visual baselines rather than replaying hidden increments.
+## Process sampling
 
-A thin two-color arc beside each name shows the accumulated observed idle/run
-ratio. Exact durations remain in the hover description and accessibility text;
-missing or zero totals use a neutral track rather than an invented ratio.
-
-Names, status text, arcs and markers share one resolved visual state and color.
-The default skin palette defines separate running, waiting, attention, error,
-unknown and offline roles. The classic palette uses orange, green, yellow, red,
-purple and gray respectively, with shades adapted to light and dark surfaces.
-Legacy waveform palettes remain protected by the same semantic priority.
-Dynamic activity is drawn only for running nodes; attention, error, unknown and
-offline states always retain their semantic color.
-
-The existing `orbit_label_color` setting now selects the global status palette:
-`theme` means skin status colors and `status` means classic status colors.
-It no longer makes every session name the same accent color. See
-[color analysis and the shared API](THEMING.md) for resolver precedence,
-component roles and exact RGB values.
+Each collection uses one immutable process snapshot and parent/child index. Resource sampling remains bounded and asynchronous, with process-instance baselines and explicit shared or unconfirmed attribution. CPU is measured from process CPU time; Linux I/O uses live thread counters to avoid recounting waited-for children. Resource activity does not reopen a completed foreground turn; precisely bound background task activity is evaluated separately. Silence never proves completion. Short-lived work between samples may be missed; no eBPF component is installed. See [process collection](PROCESS_COLLECTION.zh-CN.md).

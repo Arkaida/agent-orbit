@@ -29,31 +29,31 @@
 
 断线来源保留上次累计值，实时速度停止显示。部分来源在线时，只显示在线且已覆盖部分的速度。新连接、关注列表变化、日志身份变化或计数重置后重新建立基线，不把离线期间补到的用量当成瞬时高峰。界面重复刷新不会重复记账。
 
-## 资源声浪
+## 活动声浪
 
-**main 预览 · 5.2.8 / build 34。** 稳定版 5.2.6 仍使用此前的资源声浪；下面说明本次拆开的四路活动信号。[完整声浪图解](WAVE_GUIDE.zh-CN.md)
+**5.3.3 / build 39。** 对话输出与 CPU、磁盘、GPU、网络共五层。输出层独立于硬件，按新增正文字符观测绘制。[完整图解](WAVE_GUIDE.zh-CN.md)
 
-四个动态通道共享同一条圆周基线和最近 24 秒的时间桶，顺时针从旧到新，不为每个通道再套一个圈。内存另用静态细弧。颜色通过统一皮肤接口解析，与名字的运行／等待状态色分开。
-
-| 通道 | 图形 | 来源与单位 | 统计边界 |
+| 通道 | 默认颜色 | 来源与单位 | 边界 |
 | --- | --- | --- | --- |
-| 输出 `output` | 半透明填充光带 | 页面、运行记录或已确认后台进展的活动变化；`活动/s` | 是合成活动单位，不是单一字节吞吐、Token 或模型生成速度 |
-| I/O `io` | 分段柱 | root 进程 `rchar/wchar` 的增量速度；`B/s` | 系统调用字节，不是纯磁盘读写，也不覆盖整个进程树的精确 I/O |
-| 工具 `tools` | 针与实心菱形 | 主日志确认的工具结果增量；`结果/s` | 包含失败结果；未返回工具只显示静态空心菱形，不生成完成波形 |
-| 网络 `network` | 细曲线与峰帽 | Linux 已关联 TCP socket 收发计数增量；`B/s` | 不包含 UDP、网卡总流量或未能归属的连接 |
-| 内存 `memory` | 静态细弧 | 已关联进程树 RSS；字节 | 不是动态活动，也不是去重后的物理内存或工作效率 |
+| 对话输出 `output` | 薄荷 | 新增非空白助手正文字符；观测字符／秒 | 不是Token、日志字节或工具事件数；终端／日志均有覆盖边界 |
+| CPU `cpu` | 青蓝 | 进程执行时间差；百分比 | `100%` 为一个逻辑核，可超过 `100%` |
+| 磁盘 `disk` | 玫红 | 活跃线程 `read_bytes/write_bytes` 连续增量；`B/s` | 观测下界，缓存命中与管道不等同读盘 |
+| GPU `gpu` | 琥珀 | NVIDIA 按进程提供的 SM 利用率；百分比 | 逐进程／设备采样点之和，可超过100%；不是去重后的设备总利用率或显存占比 |
+| 网络 `network` | 紫色 | 可关联 TCP 收发增量；`B/s` | 不包含 UDP 或网卡总量，共享与缺失保留边界 |
 
-每个会话、每个动态通道独立缩放；同一通道在整段 24 秒窗口内使用同一标尺，结合近期峰值和固定单位参考做柔和缩放。短视觉过渡结束后，相同数值映射到相同高度。高度只能比较本会话、本通道近期强弱，不能用来比较不同通道的占比或不同会话的效率。悬停可查看各通道实际单位、近期峰值和覆盖说明。
+五层使用同一种声浪皮肤，以颜色区分，叠在同一圆周和24秒时间轴，每个会话、每层独立缩放，悬停查看实际值。CPU区间采样按覆盖时间写入视觉桶，GPU按实际采样点绘制，不把查询周期当观测窗口；缓存样本不重复累计。高度不能比较不同通道的占比或任务效率。
 
-低活动灵敏度仅放大真实小变化，已知零不画动态层，未知不补成零。只有当前正在运行的会话才能贡献或绘制活动，组内等待成员不贡献动态波形；进入等待、待处理、异常、待核实或离线后立即清除历史，重新运行先建立基线。内存常驻、活动工具标志、后台终端存在或网络流量均不能单独判定任务仍在执行。首次采样、断线、计数重置后重建基线，不把历史累计画成瞬时活动。
+仅工作成员贡献动态波形，等待、异常、待核实和离线立即清除历史；恢复运行先建立基线。未知不补零，低活动灵敏度不制造活动。RSS 只保留悬停信息。旧 `output_total`、工具事件数和 `io_read/write_*` 仍可用于兼容数据消费者，但不生成新对话输出层或硬件声浪。
 
-资源采样在独立后台进行，通常约一秒更新，超过四秒的缓存不再展示为实时数据。无法读取、跨网络命名空间、缺少 TCP 字段时保留未知或部分覆盖；共享进程、共享 socket 会注明，不能当作某一个会话的独占用量。macOS 当前提供 RSS，未支持的网络和系统调用 I/O 不猜成零；输出与工具层依可观测记录独立提供。Token 仍来自 CLI 用量日志，不从这些资源计数换算。
+资源在后台有界采样，CPU、磁盘和网络约一秒更新，GPU 单独约三秒批量查询，过期样本保持未知。macOS 当前支持 CPU/RSS；Linux 磁盘、网络和GPU视权限、驱动与字段覆盖提供。Token 仍来自 CLI 用量记录。
 
-采样与绘图频率分开。自适应绘图与多层模式的短高度过渡只影响视觉几何，过渡设定时长不超过 180 毫秒；不添加活动事件、计数或用量，也不延迟完成／异常的状态投递。零值、未知和停止状态立即清除相应活动。资源速率与悬停峰值仍由真实样本计算，不能从动画帧数反推吞吐。[流畅度说明](WAVE_GUIDE.zh-CN.md#动画流畅度与监控实时性)
+前台完成不能替后台实验完成：已记录任务的连续输出、与其输出文件精确关联的进程分支活动，或经过精确会话标识核验的脱离实验进程活动，可以补充后台工作状态。整个 Claude 宿主的心跳、在线终端数量或GPU显存不足以触发此判定。详情见 [状态识别](STATUS.md)。
+
+采样、状态投递与绘图独立调度，短视觉过渡只平滑已观测值，不外推流量或延迟完成提醒。
 
 ## 接口
 
-`desktop_bridge.py` 的逐行 JSON 流新增顶层 `metrics`。它提供上述汇总、各项覆盖数和窗口长度；原始会话行中的 `telemetry` 提供独立的主会话累计计数。无数据时数值为 `null`，不要将其转换为 0。`output_total`、`output_rate` 和 `activity_level` 仍然只供声浪显示，不能当作 Token。
+`desktop_bridge.py` 的逐行 JSON 流新增顶层 `metrics`。它提供上述汇总、各项覆盖数和窗口长度；原始会话行中的 `telemetry` 提供独立的主会话累计计数。无数据时数值为 `null`，不要将其转换为 0。`output_total`、`output_rate` 和 `activity_level` 保留兼容，不再驱动硬件声浪，也不能当作 Token。
 
 | `metrics` 字段 | 说明 |
 | --- | --- |
@@ -75,6 +75,18 @@
 
 每行 `rows[].usage_metrics` 使用相同的 Token、速率、窗口与覆盖字段，`scope` 为 `root_session`，只统计该行已确认的主日志。别把全部会话的汇总当作某一会话的工作速度。
 
-`rows[].resources` 提供 `identity`、`sample_id`、`sample_age_seconds`、进程树 RSS、root I/O 与 TCP 字节和速率，以及各项 `*_available`、`*_complete`、`*_reason` 和共享范围。离线或过期数据不可当作当前活动。`usage_metrics` 另提供 `tool_completions`、`active_tools`、`tools_epoch`；只有连续 epoch 的增量才能生成工具活动。
+每行 `rows[].dialogue_output` 独立提供 `epoch`、`sample_id`、`total_chars`、`available`、`complete`、`sample_age_seconds` 和 `source`。`total_chars` 是接入后连续观测确认的新增非空白助手正文字符累计，不是日志大小、Token计数或完整生命周期输出。首次、缺口、来源／身份变化与恢复运行先建立基线；同一观测流、同一采样不重复计入。`source` 说明来自终端正文或本机助手日志；未识别布局及覆盖不完整需保留边界。
+
+`rows[].resources` 提供 `identity`、`sample_id`、`sample_age_seconds`、进程树 RSS、CPU、GPU、活跃线程磁盘 / 系统调用 I/O 与 TCP 字节和速率，以及各项 `*_available`、`*_complete`、`*_reason` 和共享范围。离线或过期数据不可当作当前活动。`usage_metrics` 另提供 `tool_completions`、`active_tools`、`tools_epoch`；这些字段继续描述工具用量，不生成硬件声浪。
+
+进程树 CPU 使用 `cpu_percent`，单逻辑核为 `100%`，多核可超过 `100%`；`cpu_seconds` 只累计连续样本已确认的增量，不是进程全生命周期 CPU。`cpu_available` / `cpu_complete` / `cpu_covered` / `cpu_reason` 表示可用性和覆盖。`attribution` 区分 `exclusive`、`shared` 与 `unattributed`；`attribution_source` 说明来自 tmux 进程树或打开的会话日志。共享宿主的数值不自动分摊给其中某个对话。
+
+I/O 接口字段名沿用，5.2.9 的 `io_scope=observed_process_tree_threads`、`io_kind=thread_syscall_bytes` 明确口径变化；`io_lower_bound=true` 表示已观测下界。旧版 root I/O 与新口径不能跨 epoch 拼成同一账本。详细限制见 [进程采集说明](PROCESS_COLLECTION.zh-CN.md)。
+
+若其他目标树的 FD 读取不完整，当前 socket 的独占归属无法证实，则 `network_attribution_unknown=true`、`network_reason=ownership_unknown`，相应流量保持未知并重新建立基线；不能将预算不足当作独占流量的证据。
 
 这套指标不需要 API 密钥，不查询供应商计费服务，不计算价格、剩余额度、机器性能或任务质量。
+
+GPU 的 `gpu_utilization_percent`、`gpu_available`、`gpu_complete`、`gpu_reason` 与独立的 `gpu_sample_id` / `gpu_sample_age_seconds` 描述真实逐进程 SM 观测。`disk_read/write_per_second` 用于磁盘声浪，不能替换成 `io_read/write_per_second`。`process_activity` 提供已核验进程身份、父关系、分进程指标和输出文件的设备／inode 标识，用于精确后台任务关联，不包含命令正文或文件路径。
+
+脱离原树的NVIDIA实验通过精确Claude会话标识、同一用户与进程身份核验后，资源范围改为 `session_processes`；逐进程 `association=claude_session_env` 标注关联来源。`background_active_session_processes` 计活动进程，不能解释为实验或智能体数量。`foreground_input_ready` 与后台运行状态分别报告。

@@ -1,25 +1,150 @@
-<svg xmlns="http://www.w3.org/2000/svg" width="1440" height="830" viewBox="0 0 1440 830" role="img" aria-labelledby="title desc">
-<title id="title">Agent Orbit 声浪阅读指南</title><desc id="desc">四个动态通道在同一基线叠加，内存静态显示。图形为示意数据。</desc>
-<defs><linearGradient id="bg" x2="1" y2="1"><stop stop-color="#07101F"/><stop offset="1" stop-color="#0D1D2D"/></linearGradient><linearGradient id="fill" x2="0" y2="1"><stop stop-color="#63D9FF" stop-opacity=".48"/><stop offset="1" stop-color="#63D9FF" stop-opacity=".05"/></linearGradient></defs>
-<rect width="1440" height="830" rx="26" fill="url(#bg)"/>
+<svg xmlns="http://www.w3.org/2000/svg" width="1440" height="860" viewBox="0 0 1440 860" role="img" aria-labelledby="title desc">
+<title id="title">Agent Orbit 统一声浪皮肤</title><desc id="desc">五种颜色对应五路真实信号，同一种皮肤给所有通道相同造型。图中为光柱皮肤和六种皮肤的固定示意。</desc>
+<defs><linearGradient id="bg" x2="1" y2="1"><stop stop-color="#07101F"/><stop offset="1" stop-color="#0D1D2D"/></linearGradient></defs>
+<rect width="1440" height="860" rx="26" fill="url(#bg)"/>
 <g font-family="-apple-system,BlinkMacSystemFont,Arial,'PingFang SC','Microsoft YaHei',sans-serif">
-<text x="56" y="58" font-size="15" letter-spacing="3" fill="#63D9FF">AGENT ORBIT / SIGNAL ATLAS</text>
-<text x="56" y="120" font-size="42" font-weight="600" fill="#E5F1FF">一圈声浪，五种线索。</text>
-<text x="56" y="157" font-size="20" fill="#91A7C3">看形状辨认来源，看高低辨认该通道最近的强弱。</text>
+<text x="56" y="58" font-size="15" fill="#63D9FF" letter-spacing="3">AGENT ORBIT / WAVE SKINS</text>
+<text x="56" y="120" font-size="42" fill="#E5F1FF" font-weight="600">一种造型，五路信号。</text>
+<text x="56" y="157" font-size="20" fill="#91A7C3" >用颜色分清来源，用声浪皮肤改变整圈造型。</text>
 <rect x="56" y="197" width="868" height="348" rx="18" fill="#091422" stroke="#21374B"/>
-<text x="80" y="230" font-size="14" letter-spacing="1" fill="#91A7C3">同一圆周展开示意 · 非实时数据</text>
-<path d="M96 434H848" stroke="#4E6982" stroke-width="1"/>
-<path d="M96 434 L96 422 L143 412 L190 425 L237 389 L284 342 L331 403 L378 419 L425 372 L472 306 L519 376 L566 407 L613 416 L660 354 L707 284 L754 370 L801 410 L848 389 L848 434Z" fill="url(#fill)"/>
-<polyline points="96,422 143,412 190,425 237,389 284,342 331,403 378,419 425,372 472,306 519,376 566,407 613,416 660,354 707,284 754,370 801,410 848,389" fill="none" stroke="#63D9FF" stroke-width="2" opacity=".75"/>
-<path d="M96 434V429" stroke="#FF91B5" stroke-width="6" stroke-dasharray="5 3"/><path d="M143 434V425" stroke="#FF91B5" stroke-width="6" stroke-dasharray="5 3"/><path d="M190 434V410" stroke="#FF91B5" stroke-width="6" stroke-dasharray="5 3"/><path d="M237 434V419" stroke="#FF91B5" stroke-width="6" stroke-dasharray="5 3"/><path d="M284 434V404" stroke="#FF91B5" stroke-width="6" stroke-dasharray="5 3"/><path d="M331 434V354" stroke="#FF91B5" stroke-width="6" stroke-dasharray="5 3"/><path d="M378 434V388" stroke="#FF91B5" stroke-width="6" stroke-dasharray="5 3"/><path d="M425 434V420" stroke="#FF91B5" stroke-width="6" stroke-dasharray="5 3"/><path d="M472 434V426" stroke="#FF91B5" stroke-width="6" stroke-dasharray="5 3"/><path d="M519 434V328" stroke="#FF91B5" stroke-width="6" stroke-dasharray="5 3"/><path d="M566 434V364" stroke="#FF91B5" stroke-width="6" stroke-dasharray="5 3"/><path d="M613 434V413" stroke="#FF91B5" stroke-width="6" stroke-dasharray="5 3"/><path d="M660 434V422" stroke="#FF91B5" stroke-width="6" stroke-dasharray="5 3"/><path d="M707 434V394" stroke="#FF91B5" stroke-width="6" stroke-dasharray="5 3"/><path d="M754 434V352" stroke="#FF91B5" stroke-width="6" stroke-dasharray="5 3"/><path d="M801 434V418" stroke="#FF91B5" stroke-width="6" stroke-dasharray="5 3"/><path d="M848 434V379" stroke="#FF91B5" stroke-width="6" stroke-dasharray="5 3"/><polyline points="96,426 143,418 190,400 237,416 284,426 331,420 378,362 425,340 472,389 519,420 566,404 613,366 660,391 707,422 754,412 801,372 848,398" fill="none" stroke="#B99CFF" stroke-width="2"/><path d="M237 434V330" stroke="#FFD187" stroke-width="2"/><path d="M237 325l5 5-5 5-5-5Z" fill="#FFD187"/><path d="M425 434V276" stroke="#FFD187" stroke-width="2"/><path d="M425 271l5 5-5 5-5-5Z" fill="#FFD187"/><path d="M660 434V356" stroke="#FFD187" stroke-width="2"/><path d="M660 351l5 5-5 5-5-5Z" fill="#FFD187"/><path d="M801 434V314" stroke="#FFD187" stroke-width="2"/><path d="M801 309l5 5-5 5-5-5Z" fill="#FFD187"/>
-<path d="M96 441H294" stroke="#7CE3C0" stroke-width="3" stroke-linecap="round"/>
-<text x="96" y="487" font-size="17" fill="#91A7C3">24 秒前</text><path d="M230 481H690l-8-4m8 4-8 4" fill="none" stroke="#4E6982"/>
-<text x="800" y="487" font-size="17" fill="#E5F1FF">现在</text>
-<text x="56" y="582" font-size="21" fill="#E5F1FF">四层动态信号叠在同一圈，不分成四个同心圈。</text>
-<text x="56" y="615" font-size="18" fill="#91A7C3">每个通道独立缩放；跨颜色、跨会话的高度不能直接比较。</text>
-<rect x="998" y="226" width="4" height="44" rx="2" fill="#63D9FF"/><text x="1022" y="241" font-size="22" fill="#E5F1FF">输出光带</text><text x="1022" y="267" font-size="17" fill="#91A7C3">终端与主日志的变化</text><rect x="998" y="300" width="4" height="44" rx="2" fill="#FF91B5"/><text x="1022" y="315" font-size="22" fill="#E5F1FF">I/O 分段柱</text><text x="1022" y="341" font-size="17" fill="#91A7C3">根进程系统调用读写</text><rect x="998" y="374" width="4" height="44" rx="2" fill="#FFD187"/><text x="1022" y="389" font-size="22" fill="#E5F1FF">工具脉冲</text><text x="1022" y="415" font-size="17" fill="#91A7C3">已返回的工具结果</text><rect x="998" y="448" width="4" height="44" rx="2" fill="#B99CFF"/><text x="1022" y="463" font-size="22" fill="#E5F1FF">网络细线</text><text x="1022" y="489" font-size="17" fill="#91A7C3">已关联 TCP 字节变化</text><rect x="998" y="522" width="4" height="44" rx="2" fill="#7CE3C0"/><text x="1022" y="537" font-size="22" fill="#E5F1FF">内存标记</text><text x="1022" y="563" font-size="17" fill="#91A7C3">进程树 RSS · 静态</text>
-<path d="M56 654H1384" stroke="#263B50"/>
-<text x="56" y="697" font-size="22" fill="#E5F1FF">静默 ≠ 未知</text><text x="56" y="732" font-size="18" fill="#91A7C3">有采样、无新增：不画波峰。无法采集：标为未观测，不补成 0。</text>
-<text x="850" y="697" font-size="22" fill="#E5F1FF">状态先于声浪</text><text x="850" y="732" font-size="18" fill="#91A7C3">等待、异常、离线后收起动态信号。</text>
-<text x="56" y="791" font-size="14" fill="#7188A4">示意图 / 默认霓虹配色 · 实际颜色随皮肤变化 · 波峰不是 CPU、Token 或推理效率</text>
+<text x="80" y="230" font-size="14" fill="#91A7C3" >光柱皮肤 · 同一圆周展开 · 固定示意数据</text>
+<path d="M96 434H848" stroke="#4E6982"/>
+<path d="M96 434V422" fill="none" stroke="#63D9FF" stroke-width="5" stroke-linecap="round" opacity=".68"/>
+<path d="M143 434V412" fill="none" stroke="#63D9FF" stroke-width="5" stroke-linecap="round" opacity=".68"/>
+<path d="M190 434V425" fill="none" stroke="#63D9FF" stroke-width="5" stroke-linecap="round" opacity=".68"/>
+<path d="M237 434V389" fill="none" stroke="#63D9FF" stroke-width="5" stroke-linecap="round" opacity=".68"/>
+<path d="M284 434V342" fill="none" stroke="#63D9FF" stroke-width="5" stroke-linecap="round" opacity=".68"/>
+<path d="M331 434V403" fill="none" stroke="#63D9FF" stroke-width="5" stroke-linecap="round" opacity=".68"/>
+<path d="M378 434V419" fill="none" stroke="#63D9FF" stroke-width="5" stroke-linecap="round" opacity=".68"/>
+<path d="M425 434V372" fill="none" stroke="#63D9FF" stroke-width="5" stroke-linecap="round" opacity=".68"/>
+<path d="M472 434V316" fill="none" stroke="#63D9FF" stroke-width="5" stroke-linecap="round" opacity=".68"/>
+<path d="M519 434V376" fill="none" stroke="#63D9FF" stroke-width="5" stroke-linecap="round" opacity=".68"/>
+<path d="M566 434V407" fill="none" stroke="#63D9FF" stroke-width="5" stroke-linecap="round" opacity=".68"/>
+<path d="M613 434V416" fill="none" stroke="#63D9FF" stroke-width="5" stroke-linecap="round" opacity=".68"/>
+<path d="M660 434V354" fill="none" stroke="#63D9FF" stroke-width="5" stroke-linecap="round" opacity=".68"/>
+<path d="M707 434V294" fill="none" stroke="#63D9FF" stroke-width="5" stroke-linecap="round" opacity=".68"/>
+<path d="M754 434V370" fill="none" stroke="#63D9FF" stroke-width="5" stroke-linecap="round" opacity=".68"/>
+<path d="M801 434V410" fill="none" stroke="#63D9FF" stroke-width="5" stroke-linecap="round" opacity=".68"/>
+<path d="M848 434V388" fill="none" stroke="#63D9FF" stroke-width="5" stroke-linecap="round" opacity=".68"/>
+<path d="M96 434V430" fill="none" stroke="#FF91B5" stroke-width="5" stroke-linecap="round" opacity=".68"/>
+<path d="M143 434V426" fill="none" stroke="#FF91B5" stroke-width="5" stroke-linecap="round" opacity=".68"/>
+<path d="M190 434V408" fill="none" stroke="#FF91B5" stroke-width="5" stroke-linecap="round" opacity=".68"/>
+<path d="M237 434V416" fill="none" stroke="#FF91B5" stroke-width="5" stroke-linecap="round" opacity=".68"/>
+<path d="M284 434V404" fill="none" stroke="#FF91B5" stroke-width="5" stroke-linecap="round" opacity=".68"/>
+<path d="M331 434V358" fill="none" stroke="#FF91B5" stroke-width="5" stroke-linecap="round" opacity=".68"/>
+<path d="M378 434V390" fill="none" stroke="#FF91B5" stroke-width="5" stroke-linecap="round" opacity=".68"/>
+<path d="M425 434V420" fill="none" stroke="#FF91B5" stroke-width="5" stroke-linecap="round" opacity=".68"/>
+<path d="M472 434V427" fill="none" stroke="#FF91B5" stroke-width="5" stroke-linecap="round" opacity=".68"/>
+<path d="M519 434V324" fill="none" stroke="#FF91B5" stroke-width="5" stroke-linecap="round" opacity=".68"/>
+<path d="M566 434V356" fill="none" stroke="#FF91B5" stroke-width="5" stroke-linecap="round" opacity=".68"/>
+<path d="M613 434V412" fill="none" stroke="#FF91B5" stroke-width="5" stroke-linecap="round" opacity=".68"/>
+<path d="M660 434V424" fill="none" stroke="#FF91B5" stroke-width="5" stroke-linecap="round" opacity=".68"/>
+<path d="M707 434V389" fill="none" stroke="#FF91B5" stroke-width="5" stroke-linecap="round" opacity=".68"/>
+<path d="M754 434V354" fill="none" stroke="#FF91B5" stroke-width="5" stroke-linecap="round" opacity=".68"/>
+<path d="M801 434V416" fill="none" stroke="#FF91B5" stroke-width="5" stroke-linecap="round" opacity=".68"/>
+<path d="M848 434V378" fill="none" stroke="#FF91B5" stroke-width="5" stroke-linecap="round" opacity=".68"/>
+<path d="M96 434V426" fill="none" stroke="#B99CFF" stroke-width="5" stroke-linecap="round" opacity=".68"/>
+<path d="M143 434V418" fill="none" stroke="#B99CFF" stroke-width="5" stroke-linecap="round" opacity=".68"/>
+<path d="M190 434V404" fill="none" stroke="#B99CFF" stroke-width="5" stroke-linecap="round" opacity=".68"/>
+<path d="M237 434V422" fill="none" stroke="#B99CFF" stroke-width="5" stroke-linecap="round" opacity=".68"/>
+<path d="M284 434V426" fill="none" stroke="#B99CFF" stroke-width="5" stroke-linecap="round" opacity=".68"/>
+<path d="M331 434V422" fill="none" stroke="#B99CFF" stroke-width="5" stroke-linecap="round" opacity=".68"/>
+<path d="M378 434V364" fill="none" stroke="#B99CFF" stroke-width="5" stroke-linecap="round" opacity=".68"/>
+<path d="M425 434V336" fill="none" stroke="#B99CFF" stroke-width="5" stroke-linecap="round" opacity=".68"/>
+<path d="M472 434V388" fill="none" stroke="#B99CFF" stroke-width="5" stroke-linecap="round" opacity=".68"/>
+<path d="M519 434V418" fill="none" stroke="#B99CFF" stroke-width="5" stroke-linecap="round" opacity=".68"/>
+<path d="M566 434V404" fill="none" stroke="#B99CFF" stroke-width="5" stroke-linecap="round" opacity=".68"/>
+<path d="M613 434V358" fill="none" stroke="#B99CFF" stroke-width="5" stroke-linecap="round" opacity=".68"/>
+<path d="M660 434V388" fill="none" stroke="#B99CFF" stroke-width="5" stroke-linecap="round" opacity=".68"/>
+<path d="M707 434V424" fill="none" stroke="#B99CFF" stroke-width="5" stroke-linecap="round" opacity=".68"/>
+<path d="M754 434V409" fill="none" stroke="#B99CFF" stroke-width="5" stroke-linecap="round" opacity=".68"/>
+<path d="M801 434V364" fill="none" stroke="#B99CFF" stroke-width="5" stroke-linecap="round" opacity=".68"/>
+<path d="M848 434V398" fill="none" stroke="#B99CFF" stroke-width="5" stroke-linecap="round" opacity=".68"/>
+<path d="M190 434V324" fill="none" stroke="#FFD187" stroke-width="5" stroke-linecap="round" opacity=".68"/>
+<path d="M425 434V284" fill="none" stroke="#FFD187" stroke-width="5" stroke-linecap="round" opacity=".68"/>
+<path d="M613 434V350" fill="none" stroke="#FFD187" stroke-width="5" stroke-linecap="round" opacity=".68"/>
+<path d="M801 434V310" fill="none" stroke="#FFD187" stroke-width="5" stroke-linecap="round" opacity=".68"/>
+<path d="M143 434V366" fill="none" stroke="#73E7C2" stroke-width="5" stroke-linecap="round" opacity=".68"/>
+<path d="M237 434V292" fill="none" stroke="#73E7C2" stroke-width="5" stroke-linecap="round" opacity=".68"/>
+<path d="M378 434V372" fill="none" stroke="#73E7C2" stroke-width="5" stroke-linecap="round" opacity=".68"/>
+<path d="M472 434V388" fill="none" stroke="#73E7C2" stroke-width="5" stroke-linecap="round" opacity=".68"/>
+<path d="M566 434V300" fill="none" stroke="#73E7C2" stroke-width="5" stroke-linecap="round" opacity=".68"/>
+<path d="M660 434V352" fill="none" stroke="#73E7C2" stroke-width="5" stroke-linecap="round" opacity=".68"/>
+<path d="M754 434V389" fill="none" stroke="#73E7C2" stroke-width="5" stroke-linecap="round" opacity=".68"/>
+<text x="96" y="487" font-size="17" fill="#91A7C3" >24 秒前</text>
+<path d="M230 481H690l-8-4m8 4-8 4" fill="none" stroke="#4E6982"/>
+<text x="800" y="487" font-size="17" fill="#E5F1FF" >现在</text>
+<rect x="998" y="226" width="4" height="44" rx="2" fill="#73E7C2"/>
+<text x="1022" y="241" font-size="22" fill="#E5F1FF" >对话输出</text>
+<text x="1022" y="267" font-size="17" fill="#91A7C3" >新增正文 · 观测字符/秒</text>
+<rect x="998" y="292" width="4" height="44" rx="2" fill="#63D9FF"/>
+<text x="1022" y="307" font-size="22" fill="#E5F1FF" >CPU</text>
+<text x="1022" y="333" font-size="17" fill="#91A7C3" >单核 100% · 关联进程</text>
+<rect x="998" y="358" width="4" height="44" rx="2" fill="#FF91B5"/>
+<text x="1022" y="373" font-size="22" fill="#E5F1FF" >磁盘</text>
+<text x="1022" y="399" font-size="17" fill="#91A7C3" >实际磁盘读写增量</text>
+<rect x="998" y="424" width="4" height="44" rx="2" fill="#FFD187"/>
+<text x="1022" y="439" font-size="22" fill="#E5F1FF" >GPU</text>
+<text x="1022" y="465" font-size="17" fill="#91A7C3" >逐进程 SM 采样合计</text>
+<rect x="998" y="490" width="4" height="44" rx="2" fill="#B99CFF"/>
+<text x="1022" y="505" font-size="22" fill="#E5F1FF" >网络</text>
+<text x="1022" y="531" font-size="17" fill="#91A7C3" >已关联 TCP 字节变化</text>
+<text x="56" y="583" font-size="23" fill="#E5F1FF" >切换声浪皮肤，五层一起改变。</text>
+<rect x="56" y="608" width="208" height="130" rx="12" fill="#091422" stroke="#21374B"/>
+<text x="72" y="634" font-size="16" fill="#E5F1FF" >光柱</text>
+<path d="M78 716V706" stroke="#63D9FF" stroke-width="4" stroke-linecap="round" opacity=".85"/>
+<path d="M101 716V694" stroke="#63D9FF" stroke-width="4" stroke-linecap="round" opacity=".85"/>
+<path d="M124 716V676" stroke="#63D9FF" stroke-width="4" stroke-linecap="round" opacity=".85"/>
+<path d="M147 716V698" stroke="#63D9FF" stroke-width="4" stroke-linecap="round" opacity=".85"/>
+<path d="M170 716V686" stroke="#63D9FF" stroke-width="4" stroke-linecap="round" opacity=".85"/>
+<path d="M193 716V666" stroke="#63D9FF" stroke-width="4" stroke-linecap="round" opacity=".85"/>
+<path d="M216 716V692" stroke="#63D9FF" stroke-width="4" stroke-linecap="round" opacity=".85"/>
+<path d="M239 716V704" stroke="#63D9FF" stroke-width="4" stroke-linecap="round" opacity=".85"/>
+<rect x="280" y="608" width="208" height="130" rx="12" fill="#091422" stroke="#21374B"/>
+<text x="296" y="634" font-size="16" fill="#E5F1FF" >等离子辉光</text>
+<path d="M302 716V706" stroke="#63D9FF" stroke-width="15" opacity=".1"/>
+<path d="M302 716V706" stroke="#63D9FF" stroke-width="7" stroke-linecap="round" opacity=".85"/>
+<path d="M325 716V694" stroke="#63D9FF" stroke-width="15" opacity=".1"/>
+<path d="M325 716V694" stroke="#63D9FF" stroke-width="7" stroke-linecap="round" opacity=".85"/>
+<path d="M348 716V676" stroke="#63D9FF" stroke-width="15" opacity=".1"/>
+<path d="M348 716V676" stroke="#63D9FF" stroke-width="7" stroke-linecap="round" opacity=".85"/>
+<path d="M371 716V698" stroke="#63D9FF" stroke-width="15" opacity=".1"/>
+<path d="M371 716V698" stroke="#63D9FF" stroke-width="7" stroke-linecap="round" opacity=".85"/>
+<path d="M394 716V686" stroke="#63D9FF" stroke-width="15" opacity=".1"/>
+<path d="M394 716V686" stroke="#63D9FF" stroke-width="7" stroke-linecap="round" opacity=".85"/>
+<path d="M417 716V666" stroke="#63D9FF" stroke-width="15" opacity=".1"/>
+<path d="M417 716V666" stroke="#63D9FF" stroke-width="7" stroke-linecap="round" opacity=".85"/>
+<path d="M440 716V692" stroke="#63D9FF" stroke-width="15" opacity=".1"/>
+<path d="M440 716V692" stroke="#63D9FF" stroke-width="7" stroke-linecap="round" opacity=".85"/>
+<path d="M463 716V704" stroke="#63D9FF" stroke-width="15" opacity=".1"/>
+<path d="M463 716V704" stroke="#63D9FF" stroke-width="7" stroke-linecap="round" opacity=".85"/>
+<rect x="504" y="608" width="208" height="130" rx="12" fill="#091422" stroke="#21374B"/>
+<text x="520" y="634" font-size="16" fill="#E5F1FF" >极光柔带</text>
+<path d="M526 706 C537.5 706 537.5 694 549 694 C560.5 694 560.5 676 572 676 C583.5 676 583.5 698 595 698 C606.5 698 606.5 686 618 686 C629.5 686 629.5 666 641 666 C652.5 666 652.5 692 664 692 C675.5 692 675.5 704 687 704 L687 716 H526Z" fill="#63D9FF" opacity=".2"/>
+<path d="M526 706 C537.5 706 537.5 694 549 694 C560.5 694 560.5 676 572 676 C583.5 676 583.5 698 595 698 C606.5 698 606.5 686 618 686 C629.5 686 629.5 666 641 666 C652.5 666 652.5 692 664 692 C675.5 692 675.5 704 687 704" fill="none" stroke="#63D9FF" stroke-width="3"/>
+<rect x="728" y="608" width="208" height="130" rx="12" fill="#091422" stroke="#21374B"/>
+<text x="744" y="634" font-size="16" fill="#E5F1FF" >雷达针</text>
+<path d="M750 716V706m0-3l3 3-3 3-3-3Z" fill="none" stroke="#63D9FF" stroke-width="1"/>
+<path d="M773 716V694m0-3l3 3-3 3-3-3Z" fill="none" stroke="#63D9FF" stroke-width="1"/>
+<path d="M796 716V676m0-3l3 3-3 3-3-3Z" fill="none" stroke="#63D9FF" stroke-width="1"/>
+<path d="M819 716V698m0-3l3 3-3 3-3-3Z" fill="none" stroke="#63D9FF" stroke-width="1"/>
+<path d="M842 716V686m0-3l3 3-3 3-3-3Z" fill="none" stroke="#63D9FF" stroke-width="1"/>
+<path d="M865 716V666m0-3l3 3-3 3-3-3Z" fill="none" stroke="#63D9FF" stroke-width="1"/>
+<path d="M888 716V692m0-3l3 3-3 3-3-3Z" fill="none" stroke="#63D9FF" stroke-width="1"/>
+<path d="M911 716V704m0-3l3 3-3 3-3-3Z" fill="none" stroke="#63D9FF" stroke-width="1"/>
+<rect x="952" y="608" width="208" height="130" rx="12" fill="#091422" stroke="#21374B"/>
+<text x="968" y="634" font-size="16" fill="#E5F1FF" >平滑曲线</text>
+<path d="M974 706 C985.5 706 985.5 694 997 694 C1008.5 694 1008.5 676 1020 676 C1031.5 676 1031.5 698 1043 698 C1054.5 698 1054.5 686 1066 686 C1077.5 686 1077.5 666 1089 666 C1100.5 666 1100.5 692 1112 692 C1123.5 692 1123.5 704 1135 704" fill="none" stroke="#63D9FF" stroke-width="1.8"/>
+<rect x="1176" y="608" width="208" height="130" rx="12" fill="#091422" stroke="#21374B"/>
+<text x="1192" y="634" font-size="16" fill="#E5F1FF" >样本端点</text>
+<circle cx="1198" cy="706" r="2.8" fill="#63D9FF"/>
+<circle cx="1221" cy="694" r="2.8" fill="#63D9FF"/>
+<circle cx="1244" cy="676" r="2.8" fill="#63D9FF"/>
+<circle cx="1267" cy="698" r="2.8" fill="#63D9FF"/>
+<circle cx="1290" cy="686" r="2.8" fill="#63D9FF"/>
+<circle cx="1313" cy="666" r="2.8" fill="#63D9FF"/>
+<circle cx="1336" cy="692" r="2.8" fill="#63D9FF"/>
+<circle cx="1359" cy="704" r="2.8" fill="#63D9FF"/>
+<text x="56" y="783" font-size="18" fill="#91A7C3" >只绘制真实观测；每层独立缩放，高度不可直接比较。</text>
+<text x="56" y="818" font-size="15" fill="#7188A4" >示意图 / 默认霓虹配色 · 无活动不造峰 · 等待与离线后停止 · 不代表 Token 或模型效率</text>
 </g></svg>

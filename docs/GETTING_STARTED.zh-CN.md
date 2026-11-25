@@ -4,14 +4,14 @@
 
 ## 1. 下载并打开
 
-1. 在 [稳定版 5.2.6 发布页](https://github.com/Arkaida/agent-orbit/releases/tag/v5.2.6) 的 **Assets** 中下载 **`Agent-Orbit-5.2.6-macos-arm64.zip`**，用于 Apple Silicon Mac。`Source code` 是开发源码，不能直接双击运行。
-2. 解压，把 **Agent Orbit.app** 放进“应用程序”或自己的常用目录，再双击。要求 **macOS 13+**；Intel Mac 需[从源码构建](../README.md#从-main-体验新声浪)。
+1. 在 [5.3.3 发布页](https://github.com/Arkaida/agent-orbit/releases/tag/v5.3.3) 的 **Assets** 中下载 **`Agent-Orbit-5.3.3-macos-arm64.zip`**，用于 Apple Silicon Mac。`Source code` 是开发源码，不能直接双击运行。
+2. 解压，把 **Agent Orbit.app** 放进“应用程序”或自己的常用目录，再双击。要求 **macOS 13+**；Intel Mac 需[从源码构建](../README.md#从源码构建)。
 3. 如果 macOS 阻止打开，确认下载来自上述仓库后，在“系统设置 → 隐私与安全性”中使用“仍要打开”。社区构建尚未 Apple 公证。
 4. 点击小窗右上角的齿轮，或屏幕菜单栏的 **AO → 设置…**。
 
 应用自带 Python，启动 Orbit 无需安装 Node.js、Python 或 Codex 插件。**被监控的 Codex / Claude 则需要你自己安装、登录并启动**；Orbit 不会替你创建或执行 Agent 任务。
 
-全新安装默认只开启本机 Codex 监控。尚未打开 Codex 会话时显示空列表属于正常情况。主分支的 5.2.8 预览新增四路声浪、自适应绘图和应用内声浪图解；5.2.6 的配置入口相同，尚无这些新显示功能。
+全新安装默认只开启本机 Codex 监控。尚未打开 Codex 会话时显示空列表属于正常情况。5.3.3 提供五路活动声浪、自适应绘图和应用内声浪图解；在设置中可分别选择窗口皮肤和声浪皮肤。
 
 ## 2. 选择监控来源
 
@@ -137,7 +137,9 @@ review
 
 ### B5. 回到原远端会话
 
-**稳定版 5.2.6 的独立应用包存在进入按钮依赖文件缺失问题**：监控可用，但卡片点击进入可能失败。主分支已补齐打包入口和内置 Python 的定位，下次从 main 构建即可使用。5.2.6 用户先在 **Mac 终端**进入原会话：
+在面板中**双击远端会话卡片，或点卡片右上角的 ↗**，打开终端进入原 tmux 会话；悬浮球模式先双击球展开面板。macOS 首次询问是否允许 Orbit 控制“终端”时，需要允许才能自动打开；之后也可在“系统设置 → 隐私与安全性 → 自动化”检查。5.3.3 已修复旧 5.2.6 安装包的进入按钮。
+
+也可在 **Mac 终端**手动进入：
 
 ```bash
 # 默认 Socket
@@ -147,7 +149,7 @@ ssh -t work-server 'tmux attach-session -t =work1'
 ssh -t work-server "tmux -S '/tmp/tmux-1000/agents' attach-session -t =work1"
 ```
 
-选择与你的配置相符的一条即可。新构建的主分支版本可在面板中**双击远端会话卡片，或点卡片右上角的 ↗**，打开终端进入；悬浮球模式先双击球展开面板。macOS 首次询问是否允许 Orbit 控制“终端”时，需要允许才能自动打开；之后也可在“系统设置 → 隐私与安全性 → 自动化”检查。离开连接仍按 **Ctrl+B**、再按 **D**，任务继续运行。
+选择与你的配置相符的一条即可。离开连接按 **Ctrl+B**、再按 **D**，任务继续运行。
 
 ## 3. 用一分钟确认设置成功
 
@@ -168,7 +170,7 @@ ssh -t work-server "tmux -S '/tmp/tmux-1000/agents' attach-session -t =work1"
 | `python3` / `tmux` 找不到 | 用 B2 的非交互 SSH 命令检查服务器 PATH |
 | 远端在线但没有目标 / 未找到会话 | SSH 用户、Socket、真实 session 名是否对应；自定义 Socket 用 B3 的命令列出。关注列表留空可临时排除名字填错 |
 | 显示待核实 | 当前 CLI 版本的日志/终端格式未被识别，或暂时缺少可靠证据；回原会话核对。不能把它当成已完成 |
-| 点击远端卡片进不去 | 稳定 5.2.6 使用 B5 的手动进入方法；main 新构建检查系统“自动化”中是否允许打开终端 |
+| 点击远端卡片进不去 | 检查系统“自动化”中是否允许打开终端；也可使用 B5 的手动进入方法 |
 | 没有完成提示音 | 检查系统音量、设置中的总提示音和完成提示开关；首次打开就已经等待的会话不补响 |
 | 找不到窗口或悬浮球 | 点击菜单栏 AO → 显示悬浮窗；已退出应用时重新打开 `.app` |
 
@@ -178,4 +180,8 @@ ssh -t work-server "tmux -S '/tmp/tmux-1000/agents' attach-session -t =work1"
 
 只下载 `.app` 不会自动安装 `ao` 命令。想使用 `ao`，请先取得项目源码，并按[使用指南的简短命令](USAGE.zh-CN.md#简短命令)设置；只用图形监控可以跳过。
 
-[完整使用指南](USAGE.zh-CN.md) · [声浪图解（main 预览）](WAVE_GUIDE.zh-CN.md) · [状态判断边界](STATUS.md) · [返回项目首页](../README.md)
+[完整使用指南](USAGE.zh-CN.md) · [声浪图解](WAVE_GUIDE.zh-CN.md) · [状态判断边界](STATUS.md) · [返回项目首页](../README.md)
+
+## 可选 GPU 声浪
+
+远端已有 NVIDIA 驱动时，Orbit 自动尝试逐进程 SM 采样；无需填写API密钥或安装插件。可在远端普通Shell中用 `nvidia-smi pmon -c 1 -s u` 检查是否提供逐进程SM字段。无GPU、无权限、驱动不支持或MIG指标缺失时，其余监控照常工作，GPU显示未观测。macOS目前仅支持CPU层，其他硬件层保持未观测。
